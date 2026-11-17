@@ -1,0 +1,18 @@
+name: nim-ocapn
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        nim: ["2.0.0", "2.2.0", "2.4.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: ${{ matrix.nim }}
+      - run: nimble test

@@ -1,0 +1,14 @@
+# Nim build products
+*.o
+*.so
+tests/test_*
+!tests/test_*.nim
+examples/api_server
+examples/api_client
+examples/api_handoff
+experiments/soak
+experiments/tcp_backpressure_probe
+
+# Local soak output
+*.csv
+*.log
