@@ -3,6 +3,9 @@ import ../src/[api, promises, references, syrup]
 import ../src/server as serverApi
 import ../src/session as sessionApi
 
+var errors = 0
+var timeouts = 0
+
 proc rssKb(): int =
   if not fileExists("/proc/self/status"): return 0
   for line in lines("/proc/self/status"):
@@ -11,6 +14,12 @@ proc rssKb(): int =
       if fields.len >= 2:
         try: return parseInt(fields[1])
         except ValueError: return 0
+
+proc openFileDescriptors(): int =
+  if not dirExists("/proc/self/fd"): return 0
+  for kind, _ in walkDir("/proc/self/fd"):
+    if kind in {pcFile, pcLinkToFile}:
+      inc result
 
 proc pumpAll(server, handoffNode: Node; clients: seq[Node]) =
   discard server.poll(0, 64)
@@ -25,13 +34,17 @@ proc waitOpen(server, handoffNode: Node; clients: seq[Node];
     for session in sessions:
       if session.state != ssOpen: open = false
     if open: return true
-    if getMonoTime() >= deadline: return false
+    if getMonoTime() >= deadline:
+      inc timeouts
+      return false
     pumpAll(server, handoffNode, clients)
 
 proc waitPromise(server, handoffNode: Node; clients: seq[Node];
                  promise: Promise; deadline: MonoTime): bool =
   while not settled(promise):
-    if getMonoTime() >= deadline: return false
+    if getMonoTime() >= deadline:
+      inc timeouts
+      return false
     pumpAll(server, handoffNode, clients)
   promise.state == psFulfilled
 
@@ -73,7 +86,7 @@ if not waitOpen(server, handoffNode, clients, connections,
 
 let outputPath = if paramCount() >= 3: paramStr(3) else: "soak.csv"
 let output = open(outputPath, fmWrite)
-output.writeLine("elapsed_s,calls,reconnects,active_sessions,pending_promises,imports,exports,pending_handoffs,queued_bytes,rss_kb")
+output.writeLine("elapsed_seconds,total_calls,calls_per_second,reconnect_cycles,active_sessions,imports,exports,active_gifts,pending_promises,pending_handoffs,pending_waiters,queued_bytes,open_file_descriptors,rss_kib,errors,timeouts")
 let started = getMonoTime()
 let finishAt = started + initDuration(seconds = duration)
 var nextReport = started
@@ -104,23 +117,32 @@ proc recordMetrics(elapsed: float) =
   let stats = clients[0].stats()
   let serverStats = server.stats()
   let handoffStats = handoffNode.stats()
-  output.writeLine($elapsed & "," & $calls & "," & $reconnects & "," &
-    $(serverStats.activeSessions + stats.activeSessions + handoffStats.activeSessions) & "," &
-    $(serverStats.pendingPromises + stats.pendingPromises + handoffStats.pendingPromises) & "," &
-    $(serverStats.imports + stats.imports + handoffStats.imports) & "," &
-    $(serverStats.exports + stats.exports + handoffStats.exports) & "," &
-    $(serverStats.pendingHandoffs + stats.pendingHandoffs + handoffStats.pendingHandoffs) & "," &
-    $(serverStats.queuedBytes + stats.queuedBytes + handoffStats.queuedBytes) & "," & $rssKb())
+  let callsPerSecond = if elapsed > 0: calls.float / elapsed else: 0.0
+  let activeSessions = serverStats.activeSessions + stats.activeSessions + handoffStats.activeSessions
+  let pendingPromises = serverStats.pendingPromises + stats.pendingPromises + handoffStats.pendingPromises
+  let imports = serverStats.imports + stats.imports + handoffStats.imports
+  let exports = serverStats.exports + stats.exports + handoffStats.exports
+  let activeGifts = serverStats.depositedGifts + stats.depositedGifts + handoffStats.depositedGifts
+  let pendingWaiters = serverStats.pendingGiftWithdraws + stats.pendingGiftWithdraws +
+    handoffStats.pendingGiftWithdraws
+  let pendingHandoffs = serverStats.pendingHandoffs + stats.pendingHandoffs + handoffStats.pendingHandoffs
+  let queuedBytes = serverStats.queuedBytes + stats.queuedBytes + handoffStats.queuedBytes
+  output.writeLine($elapsed & "," & $calls & "," & $callsPerSecond & "," & $reconnects & "," &
+    $activeSessions & "," & $imports & "," & $exports & "," & $activeGifts & "," &
+    $pendingPromises & "," & $pendingHandoffs & "," & $pendingWaiters & "," & $queuedBytes & "," &
+    $openFileDescriptors() & "," & $rssKb() & "," & $errors & "," & $timeouts)
   output.flushFile()
 
 proc runSoak() =
   defer:
-    try: recordMetrics(elapsedSeconds(started))
-    except CatchableError: discard
-    output.close()
     for client in clients: client.close()
     handoffNode.close()
     server.close()
+    if not stopRequested and getMonoTime() < finishAt:
+      inc errors
+    try: recordMetrics(elapsedSeconds(started))
+    except CatchableError: discard
+    output.close()
 
   if not establishCapabilities():
     raise newException(CatchableError, "initial capability setup timeout")
@@ -167,7 +189,12 @@ proc runSoak() =
       recordMetrics(elapsedSeconds(started))
       nextReport = getMonoTime() + initDuration(seconds = 30)
 
-runSoak()
+try:
+  runSoak()
+except CatchableError as error:
+  inc errors
+  stderr.writeLine("soak error: ", error.msg)
+  quit(1)
 if stopRequested:
   echo "soak stopped calls=", calls, " reconnects=", reconnects, " csv=", outputPath
 else:
