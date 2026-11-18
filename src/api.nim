@@ -1,5 +1,5 @@
 import std/[net, sequtils, strutils, tables]
-import ./[handoff, locators, messages, promises, references, server, session, syrup, transport]
+import ./[handoff, locators, messages, onion, promises, references, server, session, syrup, transport]
 import ./session as sessionApi
 
 type
@@ -517,6 +517,21 @@ proc dial*(node: Node; host: string; port: Port;
 proc connect*(node: Node; peer: PeerLocator;
               seed = "cccccccccccccccccccccccccccccccc";
               maxPumps = 10000): Session =
+  if peer.transport == "onion":
+    let onionTransport = newOnionNetlayer().dial(peer)
+    result = newSession(onionTransport, seed, peer.peerUri(), node.sessionLimits)
+    result.forwardedRegistry = node.manager.forwardedRegistry
+    result.setTraceSink(node.manager.traceNodeId, node.manager.traceSink)
+    result.remotePeer = peer
+    node.outbound.add(result)
+    var remaining = maxPumps
+    while result.state == ssNegotiating:
+      if remaining <= 0:
+        result.close("handshake timeout")
+        raise newException(SessionError, "handshake timeout")
+      discard result.pump()
+      dec remaining
+    return
   if not peer.hints.hasKey("host") or not peer.hints.hasKey("port"):
     raise newException(SessionError, "TCP peer locator requires host and port hints")
   let host = peer.hints["host"]

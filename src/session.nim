@@ -33,6 +33,7 @@ type
     operation*: string
     target*: string
     answer*: string
+    bytes*: int
     promiseState*: string
     ownership*: string
   TraceSink* = proc(event: TraceEvent) {.closure.}
@@ -186,16 +187,45 @@ proc traceMessage(session: Session; direction: TraceDirection; message: SyrupVal
     direction: direction,
     operation: if message.kind == skRecord and message.label.kind == skSymbol:
       message.label.data else: "invalid",
-    target: target, answer: answer, promiseState: "-", ownership: "-"))
+    target: target, answer: answer, bytes: message.encoded().len,
+    promiseState: "-", ownership: "-"))
 
-proc traceLifecycle(session: Session; operation, target, state, ownership: string) =
+proc traceLifecycle*(session: Session; operation, target, state, ownership: string) =
   if session.traceSink.isNil: return
   inc session.traceSequence
   session.traceSink(TraceEvent(number: session.traceSequence,
     monotonicSeconds: getMonoTime().ticks.float / 1_000_000_000.0,
     nodeId: session.traceNodeId, sessionId: session.traceSessionId(),
-    direction: tdOut, operation: operation, target: target, answer: "-",
+    direction: tdOut, operation: operation, target: target, answer: "-", bytes: 0,
     promiseState: state, ownership: ownership))
+
+proc traceProtocol(session: Session; operation, target, state, detail: string) =
+  if session.traceSink.isNil: return
+  inc session.traceSequence
+  session.traceSink(TraceEvent(number: session.traceSequence,
+    monotonicSeconds: getMonoTime().ticks.float / 1_000_000_000.0,
+    nodeId: session.traceNodeId, sessionId: session.traceSessionId(),
+    direction: tdIn, operation: operation, target: target, answer: "-", bytes: 0,
+    promiseState: state, ownership: detail))
+
+proc traceArgumentShape(value: SyrupValue): string =
+  case value.kind
+  of skSymbol: "symbol"
+  of skString: "string(len=" & $value.data.len & ")"
+  of skBytes: "bytes(len=" & $value.data.len & ")"
+  of skList: "list(len=" & $value.items.len & ")"
+  of skRecord: "record"
+  of skDict: "dict(len=" & $value.pairs.len & ")"
+  of skSet: "set(len=" & $value.elements.len & ")"
+  else: $value.kind
+
+proc traceArgumentShapes(session: Session; target: string; args: seq[SyrupValue]) =
+  var shapes = ""
+  for index, value in args:
+    if index > 0: shapes.add(",")
+    shapes.add(traceArgumentShape(value))
+  session.traceProtocol("dispatch:args", target, "received",
+    "count=" & $args.len & ",shapes=[" & shapes & "]")
 
 proc validateSessionLimits*(limits: SessionLimits) =
   if limits.maxFrameBytes <= 0:
@@ -369,11 +399,56 @@ proc publishActor*(session: Session; name: string; behavior: ActorBehavior): Cap
 
 proc depositGift*(session: Session; giftId, receiverKey: string; value: SyrupValue;
                   provenance = GiftProvenance()) =
-  session.gifts.deposit(giftId, receiverKey, value, provenance)
+  session.gifts.deposit(giftId, receiverKey, value, provenance,
+    cast[pointer](session))
+
+proc exportCapabilityProxy*(targetSession, sourceSession: Session;
+                            sourceReference: CapabilityRef): CapabilityRef
+proc exportLocalCapabilityProxy*(targetSession, sourceSession: Session;
+                                 sourceReference: CapabilityRef): CapabilityRef
+
+proc rehomeCapability*(targetSession, sourceSession: Session;
+                       value: SyrupValue): SyrupValue =
+  ## Convert a capability descriptor from sourceSession's namespace into a
+  ## descriptor that is valid on targetSession's connection.
+  let reference = value.descriptor()
+  if targetSession == sourceSession:
+    return reference.payloadDescriptor()
+  let proxy = if reference.kind == rkExport:
+      targetSession.exportLocalCapabilityProxy(sourceSession, reference)
+    elif reference.kind == rkImportObject:
+      targetSession.exportCapabilityProxy(sourceSession, reference)
+    else:
+      raise newException(SessionError, "cannot rehome a non-object capability")
+  targetSession.traceLifecycle("capability:rehome",
+    $reference.kind & ":" & $reference.position, "mapped",
+    "source=" & sourceSession.sessionId())
+  proxy.payloadDescriptor()
+
+proc mapGiftCapability(session: Session; value: SyrupValue; owner: pointer): SyrupValue =
+  let reference = try: value.descriptor()
+                  except ReferenceError: return value
+  if reference.kind notin {rkImportObject, rkExport} or owner.isNil:
+    return value
+  let sourceSession = cast[Session](owner)
+  if sourceSession.isNil or sourceSession.state == ssClosed:
+    raise newException(SessionError, "gift capability owner session is closed")
+  if sourceSession == session:
+    return if reference.kind == rkExport:
+        importObject(reference.position).descriptor()
+      else:
+        exportRef(reference.position).descriptor()
+  let proxy = if reference.kind == rkExport:
+      session.exportLocalCapabilityProxy(sourceSession, reference)
+    else:
+      session.exportCapabilityProxy(sourceSession, reference)
+  proxy.payloadDescriptor()
 
 proc withdrawGift*(session: Session; giftId, receiverKey: string;
                    provenance = GiftProvenance()): Promise =
-  result = session.gifts.withdraw(giftId, receiverKey, provenance)
+  result = session.gifts.withdraw(giftId, receiverKey, provenance,
+    proc(value: SyrupValue; owner: pointer): SyrupValue =
+      session.mapGiftCapability(value, owner))
   session.giftPromises.add(result)
   result.onSettle(proc(promise: Promise) =
     for index, tracked in session.giftPromises:
@@ -406,6 +481,7 @@ proc responseTarget*(resolver: CapabilityRef): CapabilityRef
 proc flushPipelines(session: Session; answerPosition: int64)
 proc sendFulfillment(session: Session; resolver, value: SyrupValue;
                      listenMode: int64; legacy: bool)
+proc retainOutboundCapability(session: Session; value: SyrupValue)
 proc settleAnswerSlot(session: Session; position: int64; args: seq[SyrupValue])
 
 proc signLocal*(session: Session; payload: string): string =
@@ -453,6 +529,7 @@ proc isPromiseDescriptor(value: SyrupValue): bool =
 
 proc sendFulfillment(session: Session; resolver, value: SyrupValue;
                      listenMode: int64; legacy: bool) =
+  session.retainOutboundCapability(value)
   if not isPromiseDescriptor(value):
     if legacy or listenMode in [2'i64, 3'i64]:
       let message = if legacy:
@@ -653,6 +730,16 @@ proc accountOutboundExport*(session: Session; reference: CapabilityRef) =
   session.outboundDescriptorUses[reference.position] = uses + 1
   session.traceLifecycle("reference:wire-retain", $reference.position, "-",
     "wire=" & $session.references.exports[reference.position].wireRefs)
+
+proc retainOutboundCapability(session: Session; value: SyrupValue) =
+  let reference = try: value.descriptor()
+                  except ReferenceError: return
+  if reference.kind notin {rkImportObject, rkImportPromise} or
+      not session.references.exports.hasKey(reference.position):
+    return
+  session.references.retainExport(reference.position)
+  session.traceLifecycle("reference:wire-retain", $reference.position,
+    "result", "wire=" & $session.references.exports[reference.position].wireRefs)
 
 proc maybeRetireForwardedPromise(session: Session; local: CapabilityRef;
                                  origin: ForwardedPromiseOrigin) =
@@ -897,6 +984,29 @@ proc exportCapabilityProxy*(targetSession, sourceSession: Session;
         actor.breakAnswer(answer, result.reason))
     list()
 
+proc exportLocalCapabilityProxy*(targetSession, sourceSession: Session;
+                                 sourceReference: CapabilityRef): CapabilityRef =
+  if sourceReference.kind != rkExport:
+    raise newException(SessionError, "local capability proxy requires an export")
+  let behavior = sourceSession.references.exportBehavior(sourceReference.position)
+  if behavior.isNil:
+    raise newException(SessionError, "cannot proxy an unknown local capability")
+  result = targetSession.exportOwned(proc(values: seq[SyrupValue]): SyrupValue = list(),
+    eoForwardedProxy)
+  targetSession.actors[result.position] = proc(actor: Session;
+      args: seq[SyrupValue]): SyrupValue =
+    if sourceSession.actors.hasKey(sourceReference.position):
+      sourceSession.actors[sourceReference.position](sourceSession, args)
+    else:
+      let behaviorArgs = if args.len > 0 and args[0].kind == skSymbol and
+          args[0].data notin ["fulfill", "break"]:
+        args[1 ..^ 1]
+      else:
+        args
+      sourceSession.traceArgumentShapes("export:" & $sourceReference.position,
+        behaviorArgs)
+      behavior(behaviorArgs)
+
 proc routeForwardedPipeline(session: Session; target: CapabilityRef;
                             args: seq[SyrupValue]; resolver: SyrupValue): bool =
   let lookup = if target.kind == rkImportPromise: exportRef(target.position) else: target
@@ -1049,13 +1159,15 @@ proc stats*(session: Session): SessionStats =
       inc result.forwardedProxyCount
   for slot in session.promiseSlots.values:
     result.promiseListenerCount += slot.listeners.len
-  if session.transport of TcpTransport:
-    result.queuedBytes = TcpTransport(session.transport).queuedBytes()
+  result.queuedBytes = session.transport.queuedBytes()
 
 proc fetch*(session: Session; swissName: string): Promise =
   session.call(exportRef(0), "fetch", [bytes(swissName)])
 
 proc pump*(session: Session): bool
+
+proc handshakeStarted*(session: Session): bool = session.sentHello
+proc handshakeReceived*(session: Session): bool = session.sawHello
 
 proc waitFor*(session: Session; promise: Promise; maxPumps = 10000): SyrupValue =
   if promise.isNil:
@@ -1277,11 +1389,9 @@ proc pumpImpl(session: Session): bool =
 
 proc pump*(session: Session): bool =
   try:
-    if session.transport of TcpTransport:
-      discard TcpTransport(session.transport).flushOutput()
+    discard session.transport.flushOutput()
     result = session.pumpImpl()
-    if session.transport of TcpTransport:
-      discard TcpTransport(session.transport).flushOutput()
+    discard session.transport.flushOutput()
   except CatchableError as error:
     session.traceLifecycle("protocol:error", "-", "closed", error.msg)
     if session.state != ssClosed:
@@ -1440,17 +1550,14 @@ proc processMessage(session: Session; message: SyrupValue) =
       raise newException(SessionError, "invalid deposit-gift id")
     try:
       let capability = argsValue.items[2].descriptor()
-      if capability.kind == rkExport:
-        session.depositGift(argsValue.items[1].data, "",
-          importObject(capability.position).descriptor(),
-          GiftProvenance(sessionId: session.sessionId(),
-            gifterSide: session.remoteSideId(), gifterKey: session.remotePublicKey))
-      elif capability.kind in {rkImportObject, rkImportPromise}:
+      if capability.kind in {rkExport, rkImportObject, rkImportPromise}:
         session.depositGift(argsValue.items[1].data, "", capability.descriptor(),
           GiftProvenance(sessionId: session.sessionId(),
             gifterSide: session.remoteSideId(), gifterKey: session.remotePublicKey))
       else:
         raise newException(ReferenceError, "gift must contain an imported capability")
+      session.traceLifecycle("handoff:deposit", traceId(argsValue.items[1].data),
+        "deposited", "gift")
     except ReferenceError:
       raise newException(SessionError, "invalid deposit-gift capability")
     return
@@ -1497,17 +1604,24 @@ proc processMessage(session: Session; message: SyrupValue) =
       let giftPromise = session.withdrawGift(giftId, receiverKey,
         GiftProvenance(sessionId: give.fields[2].data,
           gifterSide: give.fields[3].data))
+      session.traceLifecycle("handoff:withdraw", traceId(giftId),
+        if giftPromise.state == psPending: "pending" else: "ready", "gift")
       giftPromise.onSettle(proc(promise: Promise) =
         if session.state == ssOpen:
           if promise.state == psFulfilled:
             session.resolvedAnswers[answerPosition] = promise.value
+            session.retainOutboundCapability(promise.value)
             session.send(session.callbackMessage(responseTarget(resolver).descriptor(),
               [symbol("fulfill"), promise.value]))
+            session.traceLifecycle("handoff:resolved", traceId(giftId),
+              "resolved", "gift")
             session.gcResolverWire(message.fields[3])
           else:
             session.brokenAnswers[answerPosition] = promise.reason
             session.send(session.callbackMessage(responseTarget(resolver).descriptor(),
               [symbol("break"), text(promise.reason)]))
+            session.traceLifecycle("handoff:broken", traceId(giftId),
+              "broken", "gift")
             session.gcResolverWire(message.fields[3])
           session.flushPipelines(answerPosition))
     except CatchableError as error:
@@ -1579,6 +1693,13 @@ proc processMessage(session: Session; message: SyrupValue) =
   let behavior = session.references.exportBehavior(target.position)
   if behavior.isNil:
     if session.retiredListenerResolvers.getOrDefault(target.position): return
+    var activeExports = ""
+    for position, slot in session.references.exports:
+      if activeExports.len > 0: activeExports.add(",")
+      activeExports.add($position & ":" & $slot.owner & ":wire=" & $slot.wireRefs)
+    session.traceProtocol("protocol:unknown-export", traceDescriptor(message.fields[0]),
+      "closed", "direction=in,session=" & session.traceSessionId() &
+      ",exports=[" & activeExports & "]")
     raise newException(SessionError, "unknown exported capability")
   let behaviorArgs = if not session.glowcapV1 or
       (argsValue.items.len > 0 and argsValue.items[0].kind == skSymbol and
@@ -1608,6 +1729,18 @@ proc processMessage(session: Session; message: SyrupValue) =
       session.actors[target.position](session, argsValue.items)
     else:
       behavior(behaviorArgs)
+  let dispatchedArgs = if session.actors.hasKey(target.position):
+      argsValue.items
+    else:
+      behaviorArgs
+  session.traceArgumentShapes(traceDescriptor(message.fields[0]), dispatchedArgs)
+  if message.label.data == "op:deliver" and
+      session.activeAnswerPosition >= 0 and
+      session.deferredAnswers.hasKey(session.activeAnswerPosition):
+    session.deferredAnswers.del(session.activeAnswerPosition)
+    session.activeResolver = nil
+    session.releaseDeliveryImports(argsValue)
+    return
   session.activeResolver = nil
   session.releaseDeliveryImports(argsValue)
   if message.label.data == "op:deliver":

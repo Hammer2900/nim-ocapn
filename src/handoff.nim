@@ -1,5 +1,5 @@
-import std/[net, strutils, sysrand, tables]
-import ./[locators, messages, promises, references, session, syrup, transport]
+import std/[monotimes, net, strutils, sysrand, tables]
+import ./[locators, messages, onion, promises, references, session, syrup, transport]
 
 type
   HandoffLimits* = object
@@ -37,6 +37,9 @@ type
     sessionLimits: SessionLimits
     outboundCursor: int
     receiverCursor: int
+    traceSink: TraceSink
+    traceNodeId: string
+    traceSequence: int64
 
 proc newHandoffManager*(limits = HandoffLimits(maxPending: 256);
                         sessionLimits = defaultSessionLimits()): HandoffManager =
@@ -51,6 +54,36 @@ proc ensureOpen(manager: HandoffManager) =
   if manager.closed:
     raise newException(SessionError, "handoff manager is closed")
 
+proc setTraceSink*(manager: HandoffManager; nodeId: string; sink: TraceSink) =
+  manager.traceNodeId = nodeId
+  manager.traceSink = sink
+  for session in manager.outboundSessions:
+    session.setTraceSink(nodeId, sink)
+  for session in manager.receiverSessions:
+    session.setTraceSink(nodeId, sink)
+
+proc trackedSessions*(manager: HandoffManager): seq[Session] =
+  ## Sessions owned by the handoff manager, including withdrawal sessions.
+  for session in manager.outboundSessions:
+    result.add(session)
+  for session in manager.receiverSessions:
+    var duplicate = false
+    for current in result:
+      if current == session:
+        duplicate = true
+        break
+    if not duplicate:
+      result.add(session)
+
+proc traceManager(manager: HandoffManager; operation, detail: string) =
+  if manager.traceSink.isNil: return
+  inc manager.traceSequence
+  manager.traceSink(TraceEvent(number: manager.traceSequence,
+    monotonicSeconds: getMonoTime().ticks.float / 1_000_000_000.0,
+    nodeId: manager.traceNodeId, sessionId: "handoff",
+    direction: tdOut, operation: operation, target: "-", answer: "-",
+    bytes: 0, promiseState: "-", ownership: detail))
+
 proc newGiftId(): string =
   let random = urandom(32)
   result = newString(random.len)
@@ -64,7 +97,7 @@ proc finishEnliven(manager: HandoffManager; item: PendingEnliven; promise: Promi
     return
   try:
     let capability = promise.value.descriptor()
-    let imported = importObject(capability.position).descriptor()
+    let imported = capability.payloadDescriptor()
     let giftId = newGiftId()
     let give = handoffGive(glowcapPublicKey(item.source.remotePublicKey),
       item.sturdy.peer.peerSyrup(), item.outbound.sessionId(),
@@ -75,6 +108,22 @@ proc finishEnliven(manager: HandoffManager; item: PendingEnliven; promise: Promi
     item.source.fulfillAnswer(item.answer, signedGive)
   except CatchableError as error:
     item.source.breakAnswer(item.answer, error.msg)
+
+proc openHandoffSession(manager: HandoffManager; peer: PeerLocator): Session =
+  if peer.transport == "onion":
+    let transport = newOnionNetlayer().dial(peer)
+    result = newSession(transport, newGiftId(), peer.peerUri(), manager.sessionLimits)
+    result.setTraceSink(manager.traceNodeId, manager.traceSink)
+    return
+  if peer.transport notin ["tcp-testing-only", "tcp"] or
+      not peer.hints.hasKey("host") or not peer.hints.hasKey("port"):
+    raise newException(SessionError, "unsupported handoff exporter transport")
+  let host = peer.hints["host"]
+  let port = Port(parseInt(peer.hints["port"]))
+  let tcp = connectTcp(host, port)
+  tcp.setNonBlocking()
+  result = newGlowcapSession(tcp, newGiftId(), host & ":" & $port, manager.sessionLimits)
+  result.setTraceSink(manager.traceNodeId, manager.traceSink)
 
 proc startHandoffReceiver*(manager: HandoffManager; signedGive: SyrupValue;
                            signer: Session): HandoffReceipt =
@@ -87,21 +136,16 @@ proc startHandoffReceiver*(manager: HandoffManager; signedGive: SyrupValue;
       signer.localPublicKey:
     raise newException(SessionError, "handoff receiver identity mismatch")
   let peer = signedGive.fields[0].fields[1].peerLocator()
-  if peer.transport notin ["tcp-testing-only", "tcp"] or
-      not peer.hints.hasKey("host") or not peer.hints.hasKey("port"):
-    raise newException(SessionError, "unsupported handoff exporter transport")
-  let host = peer.hints["host"]
-  let port = Port(parseInt(peer.hints["port"]))
-  let tcp = connectTcp(host, port)
-  tcp.setNonBlocking()
-  let session = newGlowcapSession(tcp, newGiftId(), host & ":" & $port,
-    manager.sessionLimits)
+  let session = manager.openHandoffSession(peer)
   session.remoteLocation = peer.peerSyrup().encoded()
   session.remotePeer = peer
   if manager.pendingReceives.len >= manager.limits.maxPending:
     session.close("pending handoff limit exceeded")
     raise newException(SessionError, "pending handoff limit exceeded")
   manager.receiverSessions.add(session)
+  manager.traceManager("handoff:receive-queued",
+    "receiverSessions=" & $manager.receiverSessions.len &
+    ",pendingReceives=" & $manager.pendingReceives.len)
   let completion = newPromise()
   result = HandoffReceipt(promise: completion, session: session)
   manager.pendingReceives.add(PendingReceive(session: session, signer: signer,
@@ -111,11 +155,6 @@ proc startSturdyRefSession*(manager: HandoffManager; sturdy: SturdyRef;
                             source: Session; answer: AnswerContext;
                             existing: openArray[Session] = []): SyrupValue =
   manager.ensureOpen()
-  if sturdy.peer.transport notin ["tcp-testing-only", "tcp"] or
-      not sturdy.peer.hints.hasKey("host") or not sturdy.peer.hints.hasKey("port"):
-    raise newException(SessionError, "unsupported sturdyref transport")
-  let host = sturdy.peer.hints["host"]
-  let port = Port(parseInt(sturdy.peer.hints["port"]))
   let expectedLocation = sturdy.peer.peerSyrup().encoded()
   var session: Session
   for candidate in existing:
@@ -124,10 +163,7 @@ proc startSturdyRefSession*(manager: HandoffManager; sturdy: SturdyRef;
       session = candidate
       break
   if session.isNil:
-    let tcp = connectTcp(host, port)
-    tcp.setNonBlocking()
-    session = newGlowcapSession(tcp, newGiftId(), host & ":" & $port,
-      manager.sessionLimits)
+    session = manager.openHandoffSession(sturdy.peer)
     session.remoteLocation = expectedLocation
     session.remotePeer = sturdy.peer
     manager.outboundSessions.add(session)
@@ -153,7 +189,9 @@ proc handoffArgument*(manager: HandoffManager; source: Session;
   let give = handoffGive(glowcapPublicKey(receiver.remotePublicKey),
     exporter.peerSyrup(), source.sessionId(), source.localSideId(), giftId)
   source.send(deliverV1Callback(exportRef(0).targetDescriptor(),
-    [symbol("deposit-gift"), bytes(giftId), capability.descriptor()]))
+    [symbol("deposit-gift"), bytes(giftId), capability.payloadDescriptor()]))
+  source.traceLifecycle("handoff:deposit-queued", "gift:" & $giftId.len & "bytes",
+    "queued", "gift")
   signatureEnvelope(give, source.signLocal(give.encoded()))
 
 proc cleanup(manager: HandoffManager) =
@@ -226,7 +264,8 @@ proc pumpWork*(manager: HandoffManager; maxWork = 64): int =
     let session = manager.outboundSessions[index]
     if session.state != ssClosed:
       try: discard session.pump()
-      except CatchableError: discard
+      except CatchableError as error:
+        manager.traceManager("handoff:pump-error", error.msg)
       inc work
     inc inspected
   if manager.outboundSessions.len > 0:
@@ -246,7 +285,8 @@ proc pumpWork*(manager: HandoffManager; maxWork = 64): int =
     let session = manager.receiverSessions[index]
     if session.state != ssClosed:
       try: discard session.pump()
-      except CatchableError: discard
+      except CatchableError as error:
+        manager.traceManager("handoff:pump-error", error.msg)
       inc work
     inc inspected
   if manager.receiverSessions.len > 0:
@@ -266,8 +306,14 @@ proc pumpWork*(manager: HandoffManager; maxWork = 64): int =
     let signedReceive = signatureEnvelope(receive,
       item.signer.signLocal(receive.encoded()))
     item.withdrawal = item.session.call(exportRef(0), "withdraw-gift", [signedReceive])
+    manager.traceManager("handoff:withdraw-sent",
+      "session=" & item.session.sessionId() & ",answer=" &
+      $item.withdrawal.answerPosition)
     let completion = item.result
     item.withdrawal.onSettle(proc(settled: Promise) =
+      manager.traceManager("handoff:withdraw-settled",
+        "state=" & $settled.state &
+        (if settled.state == psBroken: ",reason=" & settled.reason else: ""))
       if settled.state == psBroken:
         completion.breakPromise(settled.reason)
       else:
@@ -279,3 +325,12 @@ proc pumpWork*(manager: HandoffManager; maxWork = 64): int =
 
 proc pump*(manager: HandoffManager; maxWork = 64) =
   discard manager.pumpWork(maxWork)
+
+proc waitReadable*(manager: HandoffManager; timeoutMs: int): bool =
+  for session in manager.outboundSessions:
+    if session.state != ssClosed and session.transport.waitReadable(timeoutMs):
+      return true
+  for session in manager.receiverSessions:
+    if session.state != ssClosed and session.transport.waitReadable(timeoutMs):
+      return true
+  false

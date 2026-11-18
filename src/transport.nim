@@ -1,4 +1,4 @@
-import std/[net, nativesockets, os]
+import std/[net, nativesockets, os, selectors]
 
 type
   TransportError* = object of CatchableError
@@ -25,6 +25,10 @@ proc inMemoryPair*(): tuple[local, remote: InMemoryTransport] =
   b.peer = a
   (a, b)
 
+proc newTcpTransportFromSocket*(socket: owned Socket;
+                                maxOutputBytes = 1024 * 1024): TcpTransport =
+  TcpTransport(socket: socket, maxOutputBytes: maxOutputBytes)
+
 method send*(transport: Transport; payload: string) {.base.} =
   raise newException(TransportError, "transport send is not implemented")
 
@@ -34,6 +38,14 @@ method receive*(transport: Transport): string {.base.} =
 method isClosed*(transport: Transport): bool {.base.} = false
 
 method close*(transport: Transport) {.base.} = discard
+
+method flushOutput*(transport: Transport): bool {.base.} = true
+
+method wantsWrite*(transport: Transport): bool {.base.} = false
+
+method queuedBytes*(transport: Transport): int {.base.} = 0
+
+method waitReadable*(transport: Transport; timeoutMs: int): bool {.base.} = false
 
 method send*(transport: InMemoryTransport; payload: string) =
   if transport.closed or transport.peer.isNil or transport.peer.closed:
@@ -95,6 +107,13 @@ proc setNonBlocking*(transport: TcpTransport) =
 proc setNonBlocking*(listener: TcpListener) =
   listener.socket.getFd().setBlocking(false)
 
+proc waitReadable*(listener: TcpListener; timeoutMs: int): bool =
+  if listener.isNil or listener.closed: return false
+  let selector = newSelector[int]()
+  defer: selector.close()
+  selector.registerHandle(listener.socketHandle(), {Read}, 0)
+  selector.select(timeoutMs).len > 0
+
 proc close*(listener: TcpListener) =
   if not listener.isNil and not listener.closed:
     listener.closed = true
@@ -122,7 +141,7 @@ method send*(transport: TcpTransport; payload: string) =
     transport.closed = true
     raise newException(TransportError, error.msg)
 
-proc flushOutput*(transport: TcpTransport): bool =
+method flushOutput*(transport: TcpTransport): bool =
   if transport.closed: return false
   while transport.output.len > 0:
     try:
@@ -137,8 +156,15 @@ proc flushOutput*(transport: TcpTransport): bool =
       raise newException(TransportError, error.msg)
   true
 
-proc wantsWrite*(transport: TcpTransport): bool = transport.output.len > 0
-proc queuedBytes*(transport: TcpTransport): int = transport.outputBytes
+method wantsWrite*(transport: TcpTransport): bool = transport.output.len > 0
+method queuedBytes*(transport: TcpTransport): int = transport.outputBytes
+
+method waitReadable*(transport: TcpTransport; timeoutMs: int): bool =
+  if transport.closed: return false
+  let selector = newSelector[int]()
+  defer: selector.close()
+  selector.registerHandle(transport.socketHandle(), {Read}, 0)
+  selector.select(timeoutMs).len > 0
 
 method receive*(transport: TcpTransport): string =
   if transport.closed: return ""

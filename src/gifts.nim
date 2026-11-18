@@ -3,6 +3,7 @@ import ./[promises, syrup]
 
 type
   GiftTableError* = object of CatchableError
+  GiftMapper* = proc(value: SyrupValue; owner: pointer): SyrupValue {.closure.}
   GiftProvenance* = object
     sessionId*: string
     gifterSide*: string
@@ -14,10 +15,12 @@ type
     receiverKey: string
     value: SyrupValue
     provenance: GiftProvenance
+    owner: pointer
   GiftWaiter = object
     receiverKey: string
     promise: Promise
     provenance: GiftProvenance
+    mapper: GiftMapper
   GiftTable* = ref object
     gifts: Table[string, GiftEntry]
     waiters: Table[string, seq[GiftWaiter]]
@@ -35,7 +38,7 @@ proc sameProvenance(expected, actual: GiftProvenance): bool =
       expected.gifterKey == actual.gifterKey)
 
 proc deposit*(table: GiftTable; giftId, receiverKey: string; value: SyrupValue;
-              provenance = GiftProvenance()) =
+              provenance = GiftProvenance(); owner: pointer = nil) =
   if giftId.len == 0:
     raise newException(GiftTableError, "gift id is required")
   if table.gifts.hasKey(giftId):
@@ -47,17 +50,19 @@ proc deposit*(table: GiftTable; giftId, receiverKey: string; value: SyrupValue;
     for waiter in waiters:
       if not fulfilled and waiter.receiverKey == boundKey and
           sameProvenance(waiter.provenance, provenance):
-        if not settled(waiter.promise): waiter.promise.fulfill(value)
+        if not settled(waiter.promise):
+          let mapped = if waiter.mapper.isNil: value else: waiter.mapper(value, owner)
+          waiter.promise.fulfill(mapped)
         fulfilled = true
       elif not settled(waiter.promise):
         waiter.promise.breakPromise("gift already withdrawn or receiver key mismatch")
     table.waiters.del(giftId)
   else:
     table.gifts[giftId] = GiftEntry(receiverKey: receiverKey, value: value,
-      provenance: provenance)
+      provenance: provenance, owner: owner)
 
 proc withdraw*(table: GiftTable; giftId, receiverKey: string;
-               provenance = GiftProvenance()): Promise =
+               provenance = GiftProvenance(); mapper: GiftMapper = nil): Promise =
   if giftId.len == 0 or receiverKey.len == 0:
     raise newException(GiftTableError, "gift id and receiver key are required")
   result = newPromise()
@@ -69,11 +74,12 @@ proc withdraw*(table: GiftTable; giftId, receiverKey: string;
     else:
       if entry.receiverKey.len == 0:
         table.gifts[giftId].receiverKey = receiverKey
-      result.fulfill(entry.value)
+      let mapped = if mapper.isNil: entry.value else: mapper(entry.value, entry.owner)
+      result.fulfill(mapped)
       table.gifts.del(giftId)
     return
   table.waiters.mgetOrPut(giftId, @[]).add(GiftWaiter(receiverKey: receiverKey,
-    promise: result, provenance: provenance))
+    promise: result, provenance: provenance, mapper: mapper))
 
 proc provenance*(table: GiftTable; giftId: string): GiftProvenance =
   if table.gifts.hasKey(giftId):

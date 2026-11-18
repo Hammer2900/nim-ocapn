@@ -11,6 +11,10 @@ type
     peer*: PeerLocator
     swissNum*: string
 
+proc validatePeer(peer: PeerLocator) =
+  if peer.transport.len == 0 or peer.transport.contains('.'):
+    raise newException(LocatorError, "peer transport must be a non-empty symbol without '.'")
+
 proc newPeerLocator*(transport, designator: string;
                      hints: openArray[(string, string)] = []): PeerLocator =
   result.transport = transport
@@ -18,8 +22,14 @@ proc newPeerLocator*(transport, designator: string;
   result.hints = initTable[string, string]()
   for hint in hints:
     result.hints[hint[0]] = hint[1]
+  result.validatePeer()
+
+proc samePeer*(left, right: PeerLocator): bool =
+  ## Locator equality is based on transport and designator; hints are routing data.
+  left.transport == right.transport and left.designator == right.designator
 
 proc peerSyrup*(peer: PeerLocator): SyrupValue =
+  peer.validatePeer()
   var pairs: seq[SyrupPair]
   for key, value in peer.hints:
     pairs.add(pair(text(key), text(value)))
@@ -36,6 +46,7 @@ proc peerLocator*(value: SyrupValue): PeerLocator =
     raise newException(LocatorError, "invalid ocapn-peer locator")
   result.transport = value.fields[0].data
   result.designator = value.fields[1].data
+  result.validatePeer()
   result.hints = initTable[string, string]()
   let hints = value.fields[2]
   if hints.kind == skBool and not hints.boolean: return
@@ -55,8 +66,7 @@ proc sturdyRef*(value: SyrupValue): SturdyRef =
   result.swissNum = value.fields[1].data
 
 proc peerUri*(peer: PeerLocator): string =
-  if peer.transport.len == 0 or peer.transport.contains('.'):
-    raise newException(LocatorError, "invalid peer transport")
+  peer.validatePeer()
   result = "ocapn://" & encodeUrl(peer.designator, false) & "." & peer.transport
   if peer.hints.len > 0:
     var keys: seq[string]
@@ -88,6 +98,7 @@ proc parsePeerUri*(value: string): PeerLocator =
     raise newException(LocatorError, "peer URI lacks designator or transport")
   result.transport = body[separator + 1 ..^ 1]
   result.designator = decodeUrl(body[0 ..< separator], false)
+  result.validatePeer()
   result.hints = initTable[string, string]()
   if query.len == 0: return
   for item in query.split('&'):

@@ -44,7 +44,7 @@ Run its tests with:
 nimble test
 ```
 
-The alpha package version is `0.1.0-alpha` (`nimocapn.nimble`). A public API
+The alpha package version is `0.2.0-alpha` (`nimocapn.nimble`). A public API
 overview is in [`API.md`](API.md). Runnable public-API examples are
 [`examples/api_server.nim`](examples/api_server.nim),
 [`examples/api_client.nim`](examples/api_client.nim), and

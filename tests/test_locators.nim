@@ -36,3 +36,12 @@ suite "OCapN locators":
   test "rejects malformed locators":
     expect LocatorError:
       discard record(symbol("ocapn-peer"), symbol("tcp"), text("id"), text("bad")).peerLocator()
+
+  test "rejects a transport containing the URI separator":
+    expect LocatorError:
+      discard newPeerLocator("not.a.netlayer", "peer-id")
+
+  test "peer identity ignores routing hints":
+    let left = newPeerLocator("onion", "service", [("host", "one")])
+    let right = newPeerLocator("onion", "service", [("host", "two")])
+    check left.samePeer(right)
