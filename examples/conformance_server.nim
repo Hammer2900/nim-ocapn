@@ -75,6 +75,7 @@ let manager = newTcpSessionManager("127.0.0.1", port, "conformance-nim", "127.0.
     publishConformance(session)
     acceptedSessions.add(session))
 echo "Nim conformance server listening on 127.0.0.1:", port
+stdout.flushFile()
 while true:
   discard manager.poll(1000)
   var liveAccepted: seq[Session]

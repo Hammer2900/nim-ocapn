@@ -43,8 +43,9 @@ method send*(transport: InMemoryTransport; payload: string) =
 method receive*(transport: InMemoryTransport): string =
   if transport.inbox.len == 0:
     return ""
-  result = transport.inbox[0]
-  transport.inbox.delete(0)
+  for payload in transport.inbox:
+    result.add(payload)
+  transport.inbox.setLen(0)
 
 method isClosed*(transport: InMemoryTransport): bool =
   transport.closed or transport.peer.isNil or transport.peer.closed

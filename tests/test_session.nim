@@ -1,5 +1,8 @@
-import std/[strutils, unittest]
+import std/[strutils, tables, unittest]
 import ../src/[crypto, framing, gifts, messages, promises, references, session, syrup, transport]
+
+proc sendListen(session: Session; target, resolver: CapabilityRef; mode: int64) =
+  session.send(listen(target.targetDescriptor(), resolver.descriptor(), mode))
 
 suite "in-memory Nim CapTP prototype":
   test "enforces session resource limits":
@@ -54,14 +57,502 @@ suite "in-memory Nim CapTP prototype":
     check client.state == ssOpen
     let answer = client.call(exportRef(0), "greet", [text("world")])
     check server.pump()
+    # The resolver remains wire-retained until the receiver's gc-exports.
+    check client.references.exports.hasKey(0)
+    check client.references.exports[0].wireRefs == 1
     check client.pump()
     check answer.state == psFulfilled
     check answer.value.kind == skString
     check answer.value.data == "Hello, world"
+    # The answer resolver is temporary; the published application export is not.
+    check client.references.exportCount() == 0
+    check server.references.exports.hasKey(0)
+    check server.references.exports[0].localRefs == 1
     discard server.pump() # automatic op:gc-answers from the client
+    let reused = client.call(exportRef(0), "greet", [text("again")])
+    check reused.answerPosition == answer.answerPosition
+    discard server.pump()
+    discard client.pump()
+    check reused.state == psFulfilled
+    check reused.value.data == "Hello, again"
     client.send(gcAnswers([0'i64]))
     expect SessionError:
       discard server.pump()
+
+  test "duplicate callback after answer settlement aborts without pending promises":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    discard server.exportObject(proc(args: seq[SyrupValue]): SyrupValue = text("ok"))
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let answer = client.call(exportRef(0), "value", [])
+    discard server.pump()
+    discard client.pump()
+    check answer.state == psFulfilled
+    server.send(deliverOnly(importObject(0).descriptor(),
+      [symbol("fulfill"), text("duplicate")]))
+    expect SessionError:
+      discard client.pump()
+    check client.state == ssClosed
+    check client.stats().pendingPromises == 0
+    server.close("duplicate callback test")
+
+  test "stale callback after answer wire cleanup cannot revive an answer":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    discard server.exportObject(proc(args: seq[SyrupValue]): SyrupValue = text("ok"))
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let answer = client.call(exportRef(0), "value", [])
+    discard server.pump()
+    discard client.pump()
+    check answer.state == psFulfilled
+    discard server.pump()
+    server.send(deliverOnly(importObject(0).descriptor(),
+      [symbol("fulfill"), text("stale")]))
+    expect SessionError:
+      discard client.pump()
+    check client.state == ssClosed
+    check client.stats().pendingPromises == 0
+    server.close("stale callback test")
+
+  test "stale pipeline after gc-answers is rejected":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    discard server.exportObject(proc(args: seq[SyrupValue]): SyrupValue = text("ok"))
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let answer = client.call(exportRef(0), "value", [])
+    discard server.pump()
+    discard client.pump()
+    check answer.state == psFulfilled
+    discard server.pump()
+    let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue = list())
+    client.send(deliver(reference(rkAnswer, answer.answerPosition).descriptor(),
+      [symbol("value")], 1, resolver.descriptor(), 3))
+    expect SessionError:
+      discard server.pump()
+    check server.state == ssClosed
+    client.close("stale pipeline test")
+
+  test "accounts repeated outbound capability descriptors":
+    let pair = inMemoryPair()
+    let session = newSession(pair.local)
+    let peer = newSession(pair.remote)
+    discard session.pump()
+    discard peer.pump()
+    let capability = session.exportObject(proc(args: seq[SyrupValue]): SyrupValue = text("ok"))
+    discard session.promisePayloadDescriptor(capability)
+    check session.references.exports[capability.position].wireRefs == 1
+    discard session.promisePayloadDescriptor(capability)
+    check session.references.exports[capability.position].wireRefs == 2
+    check session.references.releaseExportDelta(capability.position, 2)
+    check session.references.exports[capability.position].wireRefs == 0
+    discard session.promisePayloadDescriptor(capability)
+    check session.references.exports[capability.position].wireRefs == 1
+    check session.references.releaseExportDelta(capability.position, 1)
+    check session.references.releaseExport(capability.position)
+    check not session.references.exports.hasKey(capability.position)
+    session.close()
+    peer.close()
+
+  test "op:listen honors settling and shortening modes":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let promisePair = server.newPromisePair()
+    var settledNotified = false
+    var shortenedNotified = false
+    let settlingResolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      (settledNotified = true; list()))
+    let shorteningResolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      (shortenedNotified = true; list()))
+    client.sendListen(exportRef(promisePair.vow.position), settlingResolver, 2)
+    client.sendListen(exportRef(promisePair.vow.position), shorteningResolver, 1)
+    for _ in 0 ..< 6:
+      discard server.pump()
+    client.send(deliverOnly(exportRef(promisePair.resolver.position).targetDescriptor(),
+      [symbol("fulfill"), text("done")]))
+    discard server.pump()
+    discard client.pump()
+    check settledNotified
+    check not shortenedNotified
+    check server.stats().promiseListenerCount == 0
+
+  test "op:listen can observe a pipelined answer position":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    discard server.exportObject(proc(args: seq[SyrupValue]): SyrupValue = text("answer"))
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let answer = client.call(exportRef(0), "value", [])
+    var notified = 0
+    let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      (inc notified; list()))
+    client.sendListen(reference(rkAnswer, answer.answerPosition), resolver, 2)
+    discard server.pump()
+    discard client.pump()
+    check answer.state == psFulfilled
+    check answer.value.data == "answer"
+    check notified == 1
+    discard server.pump()
+    check server.stats().promiseSlotCount == 0
+
+  test "op:listen answer matrix covers direct and chained modes":
+    for mode in 1'i64 .. 3:
+      block direct:
+        let pair = inMemoryPair()
+        let server = newSession(pair.remote)
+        discard server.exportObject(proc(args: seq[SyrupValue]): SyrupValue = text("direct"))
+        let client = newSession(pair.local)
+        discard server.pump()
+        discard client.pump()
+        let answer = client.call(exportRef(0), "value", [])
+        var callbacks = 0
+        let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+          (inc callbacks; list()))
+        client.sendListen(reference(rkAnswer, answer.answerPosition), resolver, mode)
+        discard server.pump()
+        discard client.pump()
+        check answer.state == psFulfilled
+        check answer.value.data == "direct"
+        check callbacks == (if mode == 1: 0 else: 1)
+        discard server.pump()
+        server.close("answer listen direct")
+        client.close("answer listen direct")
+
+      block chained:
+          let pair = inMemoryPair()
+          let server = newSession(pair.remote)
+          let next = server.newPromisePair()
+          let target = server.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+            server.promisePayloadDescriptor(next.vow))
+          let client = newSession(pair.local)
+          discard server.pump()
+          discard client.pump()
+          let answer = client.call(target, "value", [])
+          var callbacks = 0
+          let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+            (inc callbacks; list()))
+          client.sendListen(reference(rkAnswer, answer.answerPosition), resolver, mode)
+          discard server.pump()
+          discard client.pump()
+          check callbacks == (if mode in [1'i64, 3'i64]: 1 else: 0)
+          check answer.state == psFulfilled
+          server.settlePromise(next.vow, text("chained"))
+          discard server.pump()
+          discard client.pump()
+          check callbacks == 1
+          server.close("answer listen chained")
+          client.close("answer listen chained")
+
+  test "disconnect between answer shortening and settling cleans listeners":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let next = server.newPromisePair()
+    let target = server.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      server.promisePayloadDescriptor(next.vow))
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let answer = client.call(target, "value", [])
+    var callbacks = 0
+    let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      (inc callbacks; list()))
+    client.sendListen(reference(rkAnswer, answer.answerPosition), resolver, 3)
+    discard server.pump()
+    discard client.pump()
+    check answer.state == psFulfilled
+    check callbacks == 1
+    check server.stats().promiseListenerCount == 0
+    server.close("disconnect during answer settling")
+    discard client.pump()
+    check client.state == ssClosed
+    check client.stats().pendingPromises == 0
+    check server.stats().promiseListenerCount == 0
+    client.close("answer listener disconnect cleanup")
+
+  test "op:listen modes continue across local promise shortening":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let shortening = server.newPromisePair()
+    let settling = server.newPromisePair()
+    var shorteningCount = 0
+    var settlingCount = 0
+    let shorteningResolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      (inc shorteningCount; list()))
+    let settlingResolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      (inc settlingCount; list()))
+    client.sendListen(exportRef(shortening.vow.position), shorteningResolver, 1)
+    client.sendListen(exportRef(shortening.vow.position), shorteningResolver, 1)
+    client.sendListen(exportRef(settling.vow.position), settlingResolver, 2)
+    for _ in 0 ..< 6:
+      discard server.pump()
+    server.settlePromise(shortening.vow, server.promisePayloadDescriptor(settling.vow))
+    server.settlePromise(settling.vow, text("settled"))
+    for _ in 0 ..< 6:
+      discard client.pump()
+    check shorteningCount == 1
+    check settlingCount == 1
+    check server.stats().promiseListenerCount == 0
+    check server.stats().listenerLifecycleCount == 0
+
+  test "mode 2 follows shortening to a same-peer broken promise":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let first = server.newPromisePair()
+    let next = server.newPromisePair()
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    var callbacks = 0
+    let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      (inc callbacks; list()))
+    client.sendListen(exportRef(first.vow.position), resolver, 2)
+    discard server.pump()
+    server.settlePromise(first.vow, server.promisePayloadDescriptor(next.vow))
+    discard server.pump()
+    discard client.pump()
+    check callbacks == 0
+    server.breakPromise(next.vow, "shortened promise broken")
+    discard server.pump()
+    discard client.pump()
+    check callbacks == 1
+    check server.stats().promiseListenerCount == 0
+
+  test "op:listen matrix covers direct, chains, break, and repeated shortening":
+    for mode in 1'i64 .. 3:
+      block direct:
+        let pair = inMemoryPair()
+        let server = newSession(pair.remote)
+        let client = newSession(pair.local)
+        discard server.pump()
+        discard client.pump()
+        let promise = server.newPromisePair()
+        var callbacks = 0
+        let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+          (inc callbacks; list()))
+        client.sendListen(exportRef(promise.vow.position), resolver, mode)
+        discard server.pump()
+        server.settlePromise(promise.vow, text("direct"))
+        discard server.pump()
+        discard client.pump()
+        check callbacks == (if mode == 1: 0 else: 1)
+        check server.stats().promiseListenerCount == 0
+
+      block chained:
+        let pair = inMemoryPair()
+        let server = newSession(pair.remote)
+        let client = newSession(pair.local)
+        discard server.pump()
+        discard client.pump()
+        let first = server.newPromisePair()
+        let second = server.newPromisePair()
+        let third = server.newPromisePair()
+        var callbacks = 0
+        let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+          (inc callbacks; list()))
+        client.sendListen(exportRef(first.vow.position), resolver, mode)
+        discard server.pump()
+        server.settlePromise(first.vow, server.promisePayloadDescriptor(second.vow))
+        discard server.pump()
+        discard client.pump()
+        server.settlePromise(second.vow, server.promisePayloadDescriptor(third.vow))
+        discard server.pump()
+        discard client.pump()
+        server.settlePromise(third.vow, text("chained"))
+        discard server.pump()
+        discard client.pump()
+        let expected = 1
+        check callbacks == expected
+        check server.stats().promiseListenerCount == 0
+
+      block broken:
+        let pair = inMemoryPair()
+        let server = newSession(pair.remote)
+        let client = newSession(pair.local)
+        discard server.pump()
+        discard client.pump()
+        let promise = server.newPromisePair()
+        var callbacks = 0
+        let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+          (inc callbacks; list()))
+        client.sendListen(exportRef(promise.vow.position), resolver, mode)
+        discard server.pump()
+        server.breakPromise(promise.vow, "broken")
+        discard server.pump()
+        discard client.pump()
+        check callbacks == (if mode == 1: 0 else: 1)
+        check server.stats().promiseListenerCount == 0
+
+  test "gc-answers retires answer positions exactly once":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    discard server.exportObject(proc(args: seq[SyrupValue]): SyrupValue = text("ok"))
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let answer = client.call(exportRef(0), "value", [])
+    discard server.pump()
+    discard client.pump()
+    check answer.state == psFulfilled
+    check server.stats().inboundAnswerCount == 1
+    discard server.pump()
+    check server.stats().inboundAnswerCount == 0
+    client.send(gcAnswers([0'i64]))
+    expect SessionError:
+      discard server.pump()
+
+  test "disconnect during listen clears promise listeners":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let promisePair = server.newPromisePair()
+    let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue = list())
+    client.sendListen(exportRef(promisePair.vow.position), resolver, 3)
+    discard server.pump()
+    check server.stats().promiseListenerCount == 1
+    client.close("listen disconnect")
+    discard server.pump()
+    check server.state == ssClosed
+    check server.stats().promiseSlotCount == 0
+    check server.stats().listenerLifecycleCount == 0
+    server.close("repeat close after listen disconnect")
+    check server.stats().promiseListenerCount == 0
+    check server.stats().listenerLifecycleCount == 0
+
+  test "GC audit protects application exports and deduplicates listeners":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let client = newSession(pair.local)
+    discard server.exportObject(proc(args: seq[SyrupValue]): SyrupValue = text("application"))
+    discard server.pump()
+    discard client.pump()
+
+    client.send(gcExports([0'i64], [1'i64]))
+    discard server.pump()
+    check server.references.exports.hasKey(0)
+    check server.references.exports[0].localRefs == 1
+
+    let promise = server.newPromisePair()
+    var callbacks = 0
+    let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      (inc callbacks; list()))
+    client.sendListen(exportRef(promise.vow.position), resolver, 2)
+    discard server.pump()
+    server.settlePromise(promise.vow, text("done"))
+    discard server.pump()
+    discard client.pump()
+
+    # Repeating the same listen must not emit a second GC for the resolver.
+    client.sendListen(exportRef(promise.vow.position), resolver, 2)
+    discard server.pump()
+    for _ in 0 ..< 3:
+      discard client.pump()
+    check callbacks == 2
+    check server.references.exports.hasKey(0)
+
+  test "forwarded promise wire ownership rejects duplicate GC":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let local = server.newPromisePair().vow
+    server.registerForwardedPromise(local, server, newPromise())
+    check server.forwardedWireRefs(local) == 1
+    check not server.forwardedRegistry.findForwardedOrigin(
+      client.localPublicKey, importPromise(local.position)).isNil
+    client.send(gcExports([local.position], [1'i64]))
+    discard server.pump()
+    check server.forwardedWireRefs(local) == 0
+    client.send(gcExports([local.position], [1'i64]))
+    expect ReferenceError:
+      discard server.pump()
+    check server.state == ssClosed
+
+  test "forwarded GC releases the settled source import":
+    let pair = inMemoryPair()
+    let target = newSession(pair.remote)
+    let sourceSession = newSession(pair.local)
+    discard target.pump()
+    discard sourceSession.pump()
+    let sourceReference = importObject(42)
+    sourceSession.retain(sourceReference)
+    let source = newPromise()
+    source.fulfill(sourceReference.descriptor())
+    let local = target.newPromisePair().vow
+    target.registerForwardedPromise(local, sourceSession, source)
+    target.settleForwardedPromise(local, source)
+    sourceSession.send(gcExports([local.position], [1'i64]))
+    discard target.pump()
+    check sourceSession.references.importRefCount(sourceReference.position) == 0
+    check target.stats().forwardedPromiseCount == 0
+
+  test "forwarded GC before settle retires after source settlement":
+    let pair = inMemoryPair()
+    let target = newSession(pair.remote)
+    let sourceSession = newSession(pair.local)
+    discard target.pump()
+    discard sourceSession.pump()
+    let sourceReference = importObject(43)
+    sourceSession.retain(sourceReference)
+    let source = newPromise()
+    let local = target.newPromisePair().vow
+    target.registerForwardedPromise(local, sourceSession, source)
+    sourceSession.send(gcExports([local.position], [1'i64]))
+    discard target.pump()
+    check target.stats().forwardedPromiseCount == 1
+    source.fulfill(sourceReference.descriptor())
+    target.settleForwardedPromise(local, source)
+    check target.stats().forwardedPromiseCount == 0
+    check sourceSession.references.importRefCount(sourceReference.position) == 0
+
+  test "closing forwarded target releases source import":
+    let pair = inMemoryPair()
+    let target = newSession(pair.remote)
+    let sourceSession = newSession(pair.local)
+    discard target.pump()
+    discard sourceSession.pump()
+    let sourceReference = importObject(44)
+    sourceSession.retain(sourceReference)
+    let source = newPromise()
+    source.fulfill(sourceReference.descriptor())
+    let local = target.newPromisePair().vow
+    target.registerForwardedPromise(local, sourceSession, source)
+    target.settleForwardedPromise(local, source)
+    check sourceSession.references.importRefCount(sourceReference.position) == 1
+    target.close("disconnect before wire GC")
+    check sourceSession.references.importRefCount(sourceReference.position) == 0
+
+  test "disconnect between listener callback and wire GC is bounded":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let promise = server.newPromisePair()
+    let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue = list())
+    client.sendListen(exportRef(promise.vow.position), resolver, 3)
+    discard server.pump()
+    server.settlePromise(promise.vow, text("done"))
+    discard server.pump()
+    client.close("disconnect before callback/GC drain")
+    discard server.pump()
+    check server.state == ssClosed
+    check server.stats().promiseSlotCount == 0
+    check server.stats().promiseListenerCount == 0
 
   test "decodes fragmented and coalesced frames":
     var decoder = newFrameDecoder(64)
@@ -137,6 +628,11 @@ suite "in-memory Nim CapTP prototype":
     discard secondClient.pump()
     check firstAnswer.value.data == "first"
     check secondAnswer.value.data == "second"
+
+  test "reference keys preserve descriptor perspective":
+    check referenceKey(importObject(7)) != referenceKey(importPromise(7))
+    check referenceKey(importObject(7)) != referenceKey(exportRef(7))
+    check referenceKey(importPromise(7)) != referenceKey(exportRef(7))
 
   test "routes concurrent calls independently":
     let pair = inMemoryPair()
@@ -224,6 +720,17 @@ suite "in-memory Nim CapTP prototype":
     check pipelinedResult.state == psFulfilled
     check pipelinedResult.value.kind == skString
     check pipelinedResult.value.data == "pipelined"
+    let followup = client.call(exportRef(1), "make", [])
+    check followup.answerPosition == factoryResult.answerPosition or
+      followup.answerPosition == pipelinedResult.answerPosition
+    let followupPipeline = client.callPipelined(followup, "value", [])
+    discard server.pump()
+    discard client.pump()
+    discard client.pump()
+    check followup.state == psFulfilled
+    check followup.value.kind == skRecord
+    check followupPipeline.state == psFulfilled
+    check followupPipeline.value.data == "pipelined"
 
   test "flushes a chained pipeline":
     let pair = inMemoryPair()
@@ -255,6 +762,73 @@ suite "in-memory Nim CapTP prototype":
     check secondResult.state == psFulfilled
     check finalResult.state == psFulfilled
     check finalResult.value.data == "deep pipeline"
+
+  test "pipelines through a remote promise reference":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let remoteThing = server.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      check args.len == 0
+      text("remote promise pipeline"))
+    let pending = server.newPromisePair()
+    let factory = server.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      check args.len == 1
+      check args[0].kind == skSymbol and args[0].data == "make"
+      server.promisePayloadDescriptor(pending.vow))
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let factoryResult = client.call(factory, "make", [])
+    discard server.pump()
+    discard client.pump()
+    check factoryResult.state == psFulfilled
+    check factoryResult.value.kind == skRecord
+    check factoryResult.value.label.kind == skSymbol
+    check factoryResult.value.label.data == "desc:import-promise"
+    check factoryResult.value.fields.len == 1
+    check factoryResult.value.fields[0].kind == skInteger
+    let pipelinedResult = client.deliverCall(factoryResult.value.descriptor(),
+      [symbol("value")])
+    discard client.pump()
+    discard server.pump()
+    check pipelinedResult.state == psPending
+    server.settlePromise(pending.vow, remoteThing.payloadDescriptor())
+    discard server.pump()
+    discard client.pump()
+    check pipelinedResult.state == psFulfilled
+    check pipelinedResult.value.data == "remote promise pipeline"
+
+  test "forwarded capability proxy retires after wire GC":
+    let pair = inMemoryPair()
+    let source = newSession(pair.remote)
+    let holder = newSession(pair.local)
+    let sourceObject = source.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      text("proxy"))
+    discard source.pump()
+    discard holder.pump()
+    let proxy = holder.exportCapabilityProxy(source, sourceObject)
+    check holder.stats().forwardedProxyCount == 1
+    source.send(gcExports([proxy.position], [1'i64]))
+    discard holder.pump()
+    check holder.stats().forwardedProxyCount == 0
+
+  test "disconnect breaks an active forwarded capability proxy":
+    let pair = inMemoryPair()
+    let source = newSession(pair.remote)
+    let holder = newSession(pair.local)
+    let sourceObject = source.exportActor(proc(actor: Session;
+        args: seq[SyrupValue]): SyrupValue =
+      discard actor.deferAnswer()
+      list())
+    discard source.pump()
+    discard holder.pump()
+    let proxy = holder.exportCapabilityProxy(source, sourceObject)
+    check holder.stats().forwardedProxyCount == 1
+    pair.remote.close()
+    discard holder.pump()
+    check holder.state == ssClosed
+    holder.close("downstream proxy cleanup")
+    check holder.stats().forwardedProxyCount == 0
+    check holder.stats().pendingPromises == 0
 
   test "disconnect breaks pending promises and clears tables":
     let pair = inMemoryPair()
@@ -418,15 +992,16 @@ suite "in-memory Nim CapTP prototype":
     let client = newSession(pair.local, clientSeed)
     discard server.pump()
     discard client.pump()
-    let gifterSeed = repeat("g", 32)
     let giftId = repeat("i", 32)
     let give = handoffGive(glowcapPublicKey(crypto.publicKey(clientSeed)),
-      glowcapLocation("127.0.0.1:1"), repeat("a", 32), repeat("b", 32), giftId)
-    let signedGive = signatureEnvelope(give, crypto.sign(gifterSeed, give.encoded()))
+      glowcapLocation("127.0.0.1:1"), server.sessionId(), server.remoteSideId(), giftId)
+    let signedGive = signatureEnvelope(give, crypto.sign(clientSeed, give.encoded()))
     let receive = handoffReceive(server.sessionId(), server.remoteSideId(), 11, signedGive)
     let signedReceive = signatureEnvelope(receive,
       crypto.sign(clientSeed, receive.encoded()))
-    server.depositGift(giftId, "", text("redeemed"))
+    server.depositGift(giftId, "", text("redeemed"),
+      GiftProvenance(sessionId: server.sessionId(),
+        gifterSide: server.remoteSideId(), gifterKey: client.localPublicKey))
     let answer = client.call(exportRef(0), "withdraw-gift", [signedReceive])
     discard server.pump()
     discard client.pump()
@@ -440,11 +1015,10 @@ suite "in-memory Nim CapTP prototype":
     let client = newSession(pair.local, clientSeed)
     discard server.pump()
     discard client.pump()
-    let gifterSeed = repeat("g", 32)
     let giftId = repeat("j", 32)
     let give = handoffGive(glowcapPublicKey(crypto.publicKey(clientSeed)),
-      glowcapLocation("127.0.0.1:1"), repeat("a", 32), repeat("b", 32), giftId)
-    let signedGive = signatureEnvelope(give, crypto.sign(gifterSeed, give.encoded()))
+      glowcapLocation("127.0.0.1:1"), server.sessionId(), server.remoteSideId(), giftId)
+    let signedGive = signatureEnvelope(give, crypto.sign(clientSeed, give.encoded()))
     let receive = handoffReceive(server.sessionId(), server.remoteSideId(), 12, signedGive)
     let signedReceive = signatureEnvelope(receive,
       crypto.sign(clientSeed, receive.encoded()))
@@ -476,6 +1050,53 @@ suite "in-memory Nim CapTP prototype":
     check answer.state == psBroken
     check server.state == ssOpen
 
+  test "withdraw rejects a give from another gifter session":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let clientSeed = repeat("c", 32)
+    let client = newSession(pair.local, clientSeed)
+    discard server.pump()
+    discard client.pump()
+    let giftId = repeat("w", 32)
+    let give = handoffGive(glowcapPublicKey(crypto.publicKey(clientSeed)),
+      glowcapLocation("127.0.0.1:1"), repeat("x", 32), server.remoteSideId(), giftId)
+    let signedGive = signatureEnvelope(give,
+      crypto.sign(clientSeed, give.encoded()))
+    let receive = handoffReceive(server.sessionId(), server.remoteSideId(), 14,
+      signedGive)
+    let signedReceive = signatureEnvelope(receive,
+      crypto.sign(clientSeed, receive.encoded()))
+    server.depositGift(giftId, "", text("gift"),
+      GiftProvenance(sessionId: server.sessionId(),
+        gifterSide: server.remoteSideId(), gifterKey: client.localPublicKey))
+    let answer = client.call(exportRef(0), "withdraw-gift", [signedReceive])
+    discard server.pump()
+    discard client.pump()
+    check answer.state == psBroken
+    check server.state == ssOpen
+
+  test "protected withdraw rejects an unbound legacy gift":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let clientSeed = repeat("c", 32)
+    let client = newSession(pair.local, clientSeed)
+    discard server.pump()
+    discard client.pump()
+    let giftId = repeat("l", 32)
+    let give = handoffGive(glowcapPublicKey(crypto.publicKey(clientSeed)),
+      glowcapLocation("127.0.0.1:1"), server.sessionId(), server.remoteSideId(), giftId)
+    let signedGive = signatureEnvelope(give, crypto.sign(clientSeed, give.encoded()))
+    let receive = handoffReceive(server.sessionId(), server.remoteSideId(), 15,
+      signedGive)
+    let signedReceive = signatureEnvelope(receive,
+      crypto.sign(clientSeed, receive.encoded()))
+    server.depositGift(giftId, "", text("legacy"))
+    let answer = client.call(exportRef(0), "withdraw-gift", [signedReceive])
+    discard server.pump()
+    discard client.pump()
+    check answer.state == psBroken
+    check server.state == ssOpen
+
   test "invalid handshake closes the session":
     let pair = inMemoryPair()
     let server = newSession(pair.remote)
@@ -484,10 +1105,12 @@ suite "in-memory Nim CapTP prototype":
     expect SessionError:
       discard server.pump()
     check server.state == ssClosed
-    discard pair.local.receive() # server's initial hello
     var decoder = newFrameDecoder()
-    let abortMessage = decoded(decoder.feed(pair.local.receive())[0])
-    check abortMessage.label.data == "op:abort"
+    var sawAbort = false
+    for wire in decoder.feed(pair.local.receive()):
+      if decoded(wire).label.data == "op:abort":
+        sawAbort = true
+    check sawAbort
 
   test "rejects application traffic before handshake":
     let pair = inMemoryPair()
@@ -520,6 +1143,30 @@ suite "in-memory Nim CapTP prototype":
   test "reference release is idempotence-safe and rejects stale ids":
     var tables = initReferenceTables(1)
     discard tables.allocateExport(proc(args: seq[SyrupValue]): SyrupValue = text("x"))
+    let answerExport = tables.allocateExport(
+      proc(args: seq[SyrupValue]): SyrupValue = text("answer"), eoAnswerResolver)
+    let listenerExport = tables.allocateExport(
+      proc(args: seq[SyrupValue]): SyrupValue = text("listener"), eoListenerResolver)
+    check tables.exports[1].owner == eoApplication
+    check tables.exports[answerExport.position].owner == eoAnswerResolver
+    check tables.exports[listenerExport.position].owner == eoListenerResolver
+    let repeated = tables.allocateExport(
+      proc(args: seq[SyrupValue]): SyrupValue = text("repeated"))
+    check tables.exports[repeated.position].wireRefs == 1
+    tables.retainExport(repeated.position)
+    tables.retainExport(repeated.position)
+    check tables.exports[repeated.position].wireRefs == 3
+    discard tables.releaseExportDelta(repeated.position, 1)
+    check tables.exports[repeated.position].wireRefs == 2
+    discard tables.releaseExportDelta(repeated.position, 1)
+    check tables.exports[repeated.position].wireRefs == 1
+    discard tables.releaseExportDelta(repeated.position, 1)
+    check tables.exports[repeated.position].wireRefs == 0
+    check tables.exports.hasKey(repeated.position)
+    discard tables.releaseExport(repeated.position)
+    check not tables.exports.hasKey(repeated.position)
+    expect ReferenceError:
+      discard tables.releaseWireExport(importObject(1), 1)
     tables.retainImport(7)
     tables.retainImport(7)
     check tables.importRefCount(7) == 2

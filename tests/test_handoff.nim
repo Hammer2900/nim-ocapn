@@ -1,5 +1,5 @@
 import std/[net, strutils, unittest]
-import ../src/[handoff, locators, messages, promises, references, server, session, syrup, transport]
+import ../src/[crypto, handoff, locators, messages, promises, references, server, session, syrup, transport]
 
 suite "handoff manager lifecycle":
   test "rejects invalid handoff limits":
@@ -23,15 +23,76 @@ suite "handoff manager lifecycle":
     let listener = listenTcp("127.0.0.1", Port(0))
     let peer = newPeerLocator("tcp-testing-only", "exporter",
       [("host", "127.0.0.1"), ("port", $listener.localPort())])
-    let give = handoffGive(glowcapPublicKey(repeat("k", 32)), peer.peerSyrup(),
-      repeat("s", 32), repeat("d", 32), "gift")
+    let give = handoffGive(glowcapPublicKey(crypto.publicKey(repeat("k", 32))), peer.peerSyrup(),
+      repeat("s", 32), repeat("d", 32), repeat("g", 32))
     let signedGive = signatureEnvelope(give, repeat("x", 64))
     let manager = newHandoffManager()
-    let receipt = manager.startHandoffReceiver(signedGive, nil)
+    let signerPair = inMemoryPair()
+    let signer = newSession(signerPair.local, repeat("k", 32))
+    let receipt = manager.startHandoffReceiver(signedGive, signer)
     receipt.session.close("peer disconnected")
     manager.pump()
     check receipt.promise.state == psBroken
     manager.close("cleanup complete")
+    signer.close("cleanup complete")
+    listener.close()
+
+  test "handoff gift ids are random 32-byte values":
+    let pair = inMemoryPair()
+    let source = newSession(pair.local, repeat("s", 32))
+    let receiver = newSession(pair.remote, repeat("r", 32))
+    discard source.pump()
+    discard receiver.pump()
+    source.remoteLocation = "tcp-testing-only"
+    source.remotePeer = newPeerLocator("tcp-testing-only", "exporter",
+      [("host", "127.0.0.1"), ("port", "1")])
+    let manager = newHandoffManager()
+    let first = manager.handoffArgument(source, importObject(7), receiver)
+    let second = manager.handoffArgument(source, importObject(7), receiver)
+    let firstId = first.fields[0].fields[4].data
+    let secondId = second.fields[0].fields[4].data
+    check firstId.len == 32
+    check secondId.len == 32
+    check firstId != secondId
+    manager.close()
+    source.close()
+    receiver.close()
+
+  test "concurrent receiver handoffs use independent identities and clean up":
+    let listener = listenTcp("127.0.0.1", Port(0))
+    let signerPair = inMemoryPair()
+    let signer = newSession(signerPair.local, repeat("k", 32))
+    let peer = newPeerLocator("tcp-testing-only", "exporter",
+      [("host", "127.0.0.1"), ("port", $listener.localPort())])
+    let give = handoffGive(glowcapPublicKey(signer.localPublicKey),
+      peer.peerSyrup(), repeat("s", 32), repeat("d", 32), repeat("g", 32))
+    let signedGive = signatureEnvelope(give, repeat("x", 64))
+    let manager = newHandoffManager()
+    let first = manager.startHandoffReceiver(signedGive, signer)
+    let second = manager.startHandoffReceiver(signedGive, signer)
+    check first.session.localPublicKey != second.session.localPublicKey
+    check manager.stats().pendingReceives == 2
+    manager.close("cancel concurrent handoffs")
+    check first.promise.state == psBroken
+    check second.promise.state == psBroken
+    check manager.stats().pendingReceives == 0
+    check manager.stats().receiverSessions == 0
+    signer.close("cleanup signer")
+    listener.close()
+
+  test "receiver rejects a give addressed to another key before dialing":
+    let listener = listenTcp("127.0.0.1", Port(0))
+    let signerPair = inMemoryPair()
+    let signer = newSession(signerPair.local, repeat("k", 32))
+    let peer = newPeerLocator("tcp-testing-only", "exporter",
+      [("host", "127.0.0.1"), ("port", $listener.localPort())])
+    let give = handoffGive(glowcapPublicKey(crypto.publicKey(repeat("z", 32))),
+      peer.peerSyrup(), repeat("s", 32), repeat("d", 32), repeat("g", 32))
+    let manager = newHandoffManager()
+    expect SessionError:
+      discard manager.startHandoffReceiver(signatureEnvelope(give, repeat("x", 64)), signer)
+    manager.close()
+    signer.close("cleanup signer")
     listener.close()
 
   test "passes a capability through an intermediate peer":
@@ -108,6 +169,21 @@ suite "handoff manager lifecycle":
       cHandoffs.pump()
     check answer.state == psFulfilled
     check answer.value.data == "Hello from A, world"
+
+    let repeated = cHandoffs.startHandoffReceiver(give.value, c)
+    spins = 0
+    while repeated.session.state != ssOpen or cHandoffs.stats().pendingReceives == 0:
+      inc spins
+      if spins > 2000: raise newException(CatchableError, "repeat withdraw setup timeout")
+      discard a.poll(10)
+      discard c.pump()
+      cHandoffs.pump()
+    check repeated.promise.state == psPending
+    check cHandoffs.stats().pendingReceives == 1
+    repeated.session.close("redeemed gift must not replay")
+    cHandoffs.pump()
+    check repeated.promise.state == psBroken
+    check cHandoffs.stats().pendingReceives == 0
     cHandoffs.close()
     bHandoffs.close()
     c.close("test complete")

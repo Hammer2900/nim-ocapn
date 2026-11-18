@@ -1,5 +1,5 @@
 import std/[net, os, sequtils, strutils, unittest]
-import ../src/[gifts, promises, references, session, server, syrup, transport]
+import ../src/[gifts, messages, promises, references, session, server, syrup, transport]
 
 suite "TCP session manager":
   test "poll honors a per-call work budget":
@@ -124,6 +124,76 @@ suite "TCP session manager":
     check manager.sessionCount == 1
     check good.state == ssOpen
     good.close("frame fault test complete")
+    manager.close()
+
+  test "isolates stale and duplicate wire GC from healthy clients":
+    var opened = 0
+    let manager = newTcpSessionManager("127.0.0.1", Port(0), "gc-fault-manager",
+      "127.0.0.1:0", proc(session: Session) =
+        inc opened
+        discard session.publishObject("stable", proc(args: seq[SyrupValue]): SyrupValue =
+          text("stable")))
+    let port = manager.listenPort()
+    let badTransport = connectTcp("127.0.0.1", port)
+    badTransport.setNonBlocking()
+    let bad = newGlowcapSession(badTransport, repeat("l", 32), "127.0.0.1:" & $port)
+    let goodTransport = connectTcp("127.0.0.1", port)
+    goodTransport.setNonBlocking()
+    let good = newGlowcapSession(goodTransport, repeat("m", 32), "127.0.0.1:" & $port)
+    while opened < 2:
+      discard manager.poll(20)
+      discard bad.pump()
+      discard good.pump()
+    bad.send(gcExports([99'i64], [1'i64]))
+    discard manager.poll(20)
+    check manager.sessionCount == 1
+    check good.state == ssOpen
+    let fetched = good.fetch("stable")
+    while not settled(fetched):
+      discard manager.poll(20)
+      discard good.pump()
+    check fetched.state == psFulfilled
+    let answer = good.call(fetched.value.descriptor(), "value", [])
+    while not settled(answer):
+      discard manager.poll(20)
+      discard good.pump()
+    check answer.value.data == "stable"
+    let recoveredTransport = connectTcp("127.0.0.1", port)
+    recoveredTransport.setNonBlocking()
+    let recovered = newGlowcapSession(recoveredTransport, repeat("n", 32),
+      "127.0.0.1:" & $port)
+    while recovered.state != ssOpen:
+      discard manager.poll(20)
+      discard recovered.pump()
+    let recoveredFetch = recovered.fetch("stable")
+    while not settled(recoveredFetch):
+      discard manager.poll(20)
+      discard recovered.pump()
+    check recoveredFetch.state == psFulfilled
+    recovered.close("reconnect after GC fault")
+    good.close("GC fault test complete")
+    manager.close()
+
+  test "rejects malformed wire GC without affecting another session":
+    var opened = 0
+    let manager = newTcpSessionManager("127.0.0.1", Port(0), "bad-gc-manager",
+      "127.0.0.1:0", proc(session: Session) = inc opened)
+    let port = manager.listenPort()
+    let badTransport = connectTcp("127.0.0.1", port)
+    badTransport.setNonBlocking()
+    let bad = newGlowcapSession(badTransport, repeat("o", 32), "127.0.0.1:" & $port)
+    let goodTransport = connectTcp("127.0.0.1", port)
+    goodTransport.setNonBlocking()
+    let good = newGlowcapSession(goodTransport, repeat("p", 32), "127.0.0.1:" & $port)
+    while opened < 2:
+      discard manager.poll(20)
+      discard bad.pump()
+      discard good.pump()
+    bad.send(record(symbol("op:gc-exports"), list([integer(0)]), list([integer(0)])))
+    discard manager.poll(20)
+    check manager.sessionCount == 1
+    check good.state == ssOpen
+    good.close("malformed GC test complete")
     manager.close()
 
   test "disconnect breaks a pending promise without affecting another client":

@@ -7,7 +7,12 @@ type
     pendingPromises*: int
     imports*: int
     exports*: int
+    listenerLifecycles*: int
     queuedBytes*: int
+    forwardedPromises*: int
+    forwardedProxies*: int
+    depositedGifts*: int
+    pendingGiftWithdraws*: int
   SessionHandler* = proc(session: Session) {.closure.}
   SessionSlot = ref object
     session: Session
@@ -25,6 +30,9 @@ type
     nextSeed: int
     handshakeTimeoutMs: int
     gifts*: GiftTable
+    forwardedRegistry*: ForwardedPromiseRegistry
+    traceSink*: TraceSink
+    traceNodeId*: string
     limits: SessionLimits
     closed: bool
 
@@ -36,9 +44,21 @@ proc newTcpSessionManager*(host: string; port: Port; seedPrefix, hostPort: strin
   result = TcpSessionManager(listener: listenTcp(host, port),
     selector: newSelector[SessionSlot](), slots: initTable[int, SessionSlot](),
     seedPrefix: seedPrefix, hostPort: hostPort, onOpen: onOpen, nextSeed: 0,
-    handshakeTimeoutMs: handshakeTimeoutMs, gifts: newGiftTable(), limits: limits)
+    handshakeTimeoutMs: handshakeTimeoutMs, gifts: newGiftTable(),
+    forwardedRegistry: ForwardedPromiseRegistry(
+      origins: initTable[ForwardedPromiseKey, ForwardedPromiseOrigin](),
+      retired: initTable[ForwardedPromiseKey, string]()),
+    limits: limits)
+  if port == Port(0):
+    result.hostPort = host & ":" & $result.listener.localPort()
   result.listener.setNonBlocking()
   result.selector.registerHandle(result.listener.socketHandle(), {Read}, nil)
+
+proc setTraceSink*(manager: TcpSessionManager; nodeId: string; sink: TraceSink) =
+  manager.traceNodeId = nodeId
+  manager.traceSink = sink
+  for slot in manager.slots.values:
+    slot.session.setTraceSink(nodeId, sink)
 
 proc removeSlot(manager: TcpSessionManager; fd: int) =
   let slot = manager.slots.getOrDefault(fd)
@@ -60,6 +80,8 @@ proc acceptReady(manager: TcpSessionManager) =
     seed[0] = char(ord('a') + manager.nextSeed mod 26)
     inc manager.nextSeed
     let session = newGlowcapSession(transport, seed, manager.hostPort, manager.limits)
+    session.forwardedRegistry = manager.forwardedRegistry
+    session.setTraceSink(manager.traceNodeId, manager.traceSink)
     session.gifts = manager.gifts
     session.ownsGifts = false
     let slot = SessionSlot(session: session, transport: transport, openNotified: false,
@@ -122,7 +144,13 @@ proc stats*(manager: TcpSessionManager): TcpManagerStats =
     result.pendingPromises += current.pendingPromises
     result.imports += current.importCount
     result.exports += current.exportCount
+    result.listenerLifecycles += current.listenerLifecycleCount
     result.queuedBytes += current.queuedBytes
+    result.forwardedPromises += current.forwardedPromiseCount
+    result.forwardedProxies += current.forwardedProxyCount
+  let giftStats = manager.gifts.stats()
+  result.depositedGifts = giftStats.deposited
+  result.pendingGiftWithdraws = giftStats.pendingWithdraws
 
 proc hasSession*(manager: TcpSessionManager; session: Session): bool =
   for slot in manager.slots.values:
@@ -140,3 +168,5 @@ proc close*(manager: TcpSessionManager) =
   manager.selector.close()
   manager.listener.close()
   manager.gifts.clear()
+  manager.forwardedRegistry.origins.clear()
+  manager.forwardedRegistry.retired.clear()

@@ -28,6 +28,18 @@ created with `capabilityArg()`; ordinary values use `valueArg()` or direct
 Syrup values. `listArg`, `recordArg`, `dictArg`, and `setArg` preserve nested
 capabilities.
 
+Promise capabilities use `RemotePromise` and `promiseArg()`:
+
+```nim
+let pending = remoteFactory.call("makePromise", [])
+let forwarded = nodeB.call(remoteRegister, "register",
+  [promiseArg(promiseRef(sessionA, pending))])
+```
+
+The receiving typed handler gets `rakPromise` with a `RemotePromise`. Promise
+identity, shortening, chained promises, and breaks are propagated across the
+intermediate peer without application code handling descriptors or gift IDs.
+
 ## Automatic handoff
 
 ```nim
@@ -40,7 +52,8 @@ application does not manage gift IDs, signed descriptors, or withdrawal.
 
 ## Lifecycle and errors
 
-Call `node.poll()` regularly, inspect `node.stats()` for resource diagnostics,
+Call `node.poll()` regularly, inspect `node.stats()` for resource diagnostics
+(including `listenerLifecycles`),
 and call `node.close()` during shutdown. `Session.close()` and `Node.close()`
 are idempotent. Disconnects break pending promises and clear session-local
 reference tables. Protocol, framing, handshake, and resource-limit failures

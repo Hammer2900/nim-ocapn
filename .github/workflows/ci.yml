@@ -16,3 +16,12 @@ jobs:
         with:
           nim-version: ${{ matrix.nim }}
       - run: nimble test
+      - name: Compile public examples
+        run: |
+          set -e
+          for source in examples/api_server.nim examples/api_client.nim \
+              examples/api_handoff.nim examples/native_multi_server.nim \
+              examples/native_greeter_server.nim examples/native_glowcap_client.nim; do
+            name=$(basename "$source" .nim)
+            nim c --hints:off --verbosity:0 --out:"/tmp/nim-ocapn-$name" "$source"
+          done

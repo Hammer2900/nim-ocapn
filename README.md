@@ -108,14 +108,17 @@ Full discovery still needs fixture isolation between long-lived scenarios.
 
 The higher-level `api.nim` module exposes `Node`, `publish`, `connect`,
 `fetchCapability`, `call`, `waitFor`, `poll`, and `close` for applications that do not need to
-construct CapTP records manually. The current pipeline implementation handles
-chained calls that resolve to exported capabilities. Promise-valued results and
-distributed reference GC remain later work.
+construct CapTP records manually. Promise-valued arguments can cross multiple
+Nim peers with preserved identity, shortening, chaining, and break propagation.
+`op:listen` modes 1/2/3 have direct and chained regression coverage; listener
+GC has descriptor-aware lifecycle tracking, duplicate-GC protection, and
+disconnect/reconnect fault tests.
 `Node.connect` bounds the handshake loop with `maxPumps` (10,000 by default)
 and closes the transport if the peer never completes negotiation.
 The message layer has exact constructors and validation for the signed
 handoff descriptors. Gift deposit/withdraw routing and both conformance
-handoff directions are implemented; distributed GC remains later work.
+handoff directions are implemented; full distributed-GC collection across
+arbitrary independent runtimes remains outside the current alpha profile.
 Sturdyref decoding accepts the binary swiss-number representation emitted by
 the conformance suite, and the fixture's inbound crossed-hello case now passes.
 `src/handoff.nim` owns both handoff directions end to end: it reuses an
@@ -173,7 +176,8 @@ a live `RemoteCapability`; `examples/sturdyref_client.nim` exercises this path.
 sessions and `Node.close()` closes them before shutting down the TCP manager.
 `Node.poll(timeoutMs, maxWork)` defaults to a bounded 64 units of work and
 uses round-robin cursors for outbound sessions. `Node.stats()` exposes active
-sessions, pending promises, imports/exports, queued bytes, and pending handoffs.
+sessions, pending promises, imports/exports, listener lifecycles, queued bytes,
+and pending handoffs.
 Session limits cover frame size, pending promises, imports/exports, and bounded
 TCP output queues; `HandoffLimits` separately bounds pending handoff work.
 Applications can pass both limit objects to `newNode(...)` to configure these

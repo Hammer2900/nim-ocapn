@@ -1,5 +1,5 @@
-import std/[net, strutils, tables]
-import ./[crypto, locators, messages, promises, references, session, syrup, transport]
+import std/[net, strutils, sysrand, tables]
+import ./[locators, messages, promises, references, session, syrup, transport]
 
 type
   HandoffLimits* = object
@@ -31,7 +31,7 @@ type
     pendingEnliven: seq[PendingEnliven]
     receiverSessions: seq[Session]
     pendingReceives: seq[PendingReceive]
-    nextGiftId: int
+    nextHandoffCounts: Table[string, int64]
     closed: bool
     limits: HandoffLimits
     sessionLimits: SessionLimits
@@ -44,11 +44,18 @@ proc newHandoffManager*(limits = HandoffLimits(maxPending: 256);
     raise newException(SessionError, "handoff limits must not be negative")
   HandoffManager(outboundSessions: @[], pendingEnliven: @[],
     receiverSessions: @[], pendingReceives: @[], limits: limits,
-    sessionLimits: sessionLimits)
+    sessionLimits: sessionLimits,
+    nextHandoffCounts: initTable[string, int64]())
 
 proc ensureOpen(manager: HandoffManager) =
   if manager.closed:
     raise newException(SessionError, "handoff manager is closed")
+
+proc newGiftId(): string =
+  let random = urandom(32)
+  result = newString(random.len)
+  for index, value in random:
+    result[index] = char(value)
 
 proc finishEnliven(manager: HandoffManager; item: PendingEnliven; promise: Promise) =
   item.completed = true
@@ -58,8 +65,7 @@ proc finishEnliven(manager: HandoffManager; item: PendingEnliven; promise: Promi
   try:
     let capability = promise.value.descriptor()
     let imported = importObject(capability.position).descriptor()
-    let giftId = crypto.sha256("nim-gift-" & $manager.nextGiftId)
-    inc manager.nextGiftId
+    let giftId = newGiftId()
     let give = handoffGive(glowcapPublicKey(item.source.remotePublicKey),
       item.sturdy.peer.peerSyrup(), item.outbound.sessionId(),
       item.outbound.localSideId(), giftId)
@@ -73,8 +79,13 @@ proc finishEnliven(manager: HandoffManager; item: PendingEnliven; promise: Promi
 proc startHandoffReceiver*(manager: HandoffManager; signedGive: SyrupValue;
                            signer: Session): HandoffReceipt =
   manager.ensureOpen()
-  if not validHandoffGive(signedGive.fields[0]):
+  if signedGive.kind != skRecord or signedGive.label.kind != skSymbol or
+      signedGive.label.data != "desc:sig-envelope" or signedGive.fields.len != 2 or
+      not validHandoffGive(signedGive.fields[0]):
     raise newException(SessionError, "invalid handoff give")
+  if signer.isNil or extractGlowcapPublicKey(signedGive.fields[0].fields[0]) !=
+      signer.localPublicKey:
+    raise newException(SessionError, "handoff receiver identity mismatch")
   let peer = signedGive.fields[0].fields[1].peerLocator()
   if peer.transport notin ["tcp-testing-only", "tcp"] or
       not peer.hints.hasKey("host") or not peer.hints.hasKey("port"):
@@ -83,9 +94,10 @@ proc startHandoffReceiver*(manager: HandoffManager; signedGive: SyrupValue;
   let port = Port(parseInt(peer.hints["port"]))
   let tcp = connectTcp(host, port)
   tcp.setNonBlocking()
-  let session = newGlowcapSession(tcp, repeat('r', 32), host & ":" & $port,
+  let session = newGlowcapSession(tcp, newGiftId(), host & ":" & $port,
     manager.sessionLimits)
   session.remoteLocation = peer.peerSyrup().encoded()
+  session.remotePeer = peer
   if manager.pendingReceives.len >= manager.limits.maxPending:
     session.close("pending handoff limit exceeded")
     raise newException(SessionError, "pending handoff limit exceeded")
@@ -114,9 +126,10 @@ proc startSturdyRefSession*(manager: HandoffManager; sturdy: SturdyRef;
   if session.isNil:
     let tcp = connectTcp(host, port)
     tcp.setNonBlocking()
-    session = newGlowcapSession(tcp, repeat('z', 32), host & ":" & $port,
+    session = newGlowcapSession(tcp, newGiftId(), host & ":" & $port,
       manager.sessionLimits)
     session.remoteLocation = expectedLocation
+    session.remotePeer = sturdy.peer
     manager.outboundSessions.add(session)
   if not answer.resolver.isNil:
     if manager.pendingEnliven.len >= manager.limits.maxPending:
@@ -129,20 +142,18 @@ proc handoffArgument*(manager: HandoffManager; source: Session;
                       capability: CapabilityRef; receiver: Session): SyrupValue =
   manager.ensureOpen()
   if source.state != ssOpen or receiver.state != ssOpen or
-      capability.kind != rkImportObject or source.remoteLocation.len == 0 or
+      capability.kind notin {rkImportObject, rkImportPromise} or source.remoteLocation.len == 0 or
       receiver.remotePublicKey.len != 32:
     raise newException(SessionError, "capability cannot be handed off")
   let exporter = if source.remotePeer.transport.len > 0:
       source.remotePeer
     else:
       decoded(source.remoteLocation).peerLocator()
-  let giftId = crypto.sha256("nim-argument-gift-" & $manager.nextGiftId)
-  inc manager.nextGiftId
+  let giftId = newGiftId()
   let give = handoffGive(glowcapPublicKey(receiver.remotePublicKey),
     exporter.peerSyrup(), source.sessionId(), source.localSideId(), giftId)
   source.send(deliverV1Callback(exportRef(0).targetDescriptor(),
-    [symbol("deposit-gift"), bytes(giftId),
-     importObject(capability.position).descriptor()]))
+    [symbol("deposit-gift"), bytes(giftId), capability.descriptor()]))
   signatureEnvelope(give, source.signLocal(give.encoded()))
 
 proc cleanup(manager: HandoffManager) =
@@ -197,6 +208,7 @@ proc close*(manager: HandoffManager; reason = "handoff manager closed") =
   manager.pendingReceives.setLen(0)
   manager.outboundSessions.setLen(0)
   manager.receiverSessions.setLen(0)
+  manager.nextHandoffCounts.clear()
 
 proc stats*(manager: HandoffManager): HandoffStats =
   result.pendingEnliven = manager.pendingEnliven.len
@@ -246,8 +258,11 @@ proc pumpWork*(manager: HandoffManager; maxWork = 64): int =
       continue
     if item.session.state != ssOpen or item.signer.state == ssClosed:
       continue
+    let sessionKey = item.session.sessionId()
+    let handoffCount = manager.nextHandoffCounts.getOrDefault(sessionKey, 0)
+    manager.nextHandoffCounts[sessionKey] = handoffCount + 1
     let receive = handoffReceive(item.session.sessionId(), item.session.localSideId(),
-      0, item.signedGive)
+      handoffCount, item.signedGive)
     let signedReceive = signatureEnvelope(receive,
       item.signer.signLocal(receive.encoded()))
     item.withdrawal = item.session.call(exportRef(0), "withdraw-gift", [signedReceive])

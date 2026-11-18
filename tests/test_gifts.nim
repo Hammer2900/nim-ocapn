@@ -39,3 +39,26 @@ suite "handoff gift table":
     table.deposit("gift", "receiver", text("one"))
     expect GiftTableError:
       table.deposit("gift", "receiver", text("two"))
+
+  test "redeemed gift can be awaited again but does not replay":
+    let table = newGiftTable()
+    let giftId = repeat("r", 32)
+    table.deposit(giftId, "receiver", text("one"))
+    let first = table.withdraw(giftId, "receiver")
+    check first.state == psFulfilled
+    let second = table.withdraw(giftId, "receiver")
+    check second.state == psPending
+    check table.stats().deposited == 0
+    check table.stats().pendingWithdraws == 1
+    discard table.cancel(second)
+    check table.stats().pendingWithdraws == 0
+
+  test "tracks independent gifts and removes them after withdrawal":
+    let table = newGiftTable()
+    table.deposit(repeat("a", 32), "a", text("a"))
+    table.deposit(repeat("b", 32), "b", text("b"))
+    check table.stats().deposited == 2
+    discard table.withdraw(repeat("a", 32), "a")
+    check table.stats().deposited == 1
+    discard table.withdraw(repeat("b", 32), "b")
+    check table.stats().deposited == 0

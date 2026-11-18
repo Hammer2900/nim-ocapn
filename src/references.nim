@@ -8,11 +8,17 @@ type
   CapabilityRef* = object
     kind*: ReferenceKind
     position*: int64
+  ReferenceKey* = object
+    kind*: ReferenceKind
+    position*: int64
+  ExportOwner* = enum
+    eoApplication, eoAnswerResolver, eoListenerResolver, eoForwardedProxy
   ExportSlot* = object
     behavior*: BehaviorRef
     live*: bool
     localRefs*: int64
     wireRefs*: int64
+    owner*: ExportOwner
   BehaviorRef* = proc(args: seq[SyrupValue]): SyrupValue {.closure.}
   ReferenceTables* = object
     exports*: Table[int64, ExportSlot]
@@ -24,7 +30,11 @@ proc reference*(kind: ReferenceKind; position: int64): CapabilityRef =
     raise newException(ReferenceError, "reference positions must be non-negative")
   CapabilityRef(kind: kind, position: position)
 
+proc referenceKey*(reference: CapabilityRef): ReferenceKey =
+  ReferenceKey(kind: reference.kind, position: reference.position)
+
 proc importObject*(position: int64): CapabilityRef = reference(rkImportObject, position)
+proc importPromise*(position: int64): CapabilityRef = reference(rkImportPromise, position)
 proc exportRef*(position: int64): CapabilityRef = reference(rkExport, position)
 
 proc initReferenceTables*(firstExport = 0'i64): ReferenceTables =
@@ -32,11 +42,12 @@ proc initReferenceTables*(firstExport = 0'i64): ReferenceTables =
   result.imports = initTable[int64, int64]()
   result.nextExport = firstExport
 
-proc allocateExport*(tables: var ReferenceTables; behavior: BehaviorRef): CapabilityRef =
+proc allocateExport*(tables: var ReferenceTables; behavior: BehaviorRef;
+                      owner = eoApplication): CapabilityRef =
   result = exportRef(tables.nextExport)
-  tables.exports[result.position] = ExportSlot(behavior: behavior, live: true,
-    localRefs: 1, wireRefs: 1)
   inc tables.nextExport
+  tables.exports[result.position] = ExportSlot(behavior: behavior, live: true,
+    localRefs: 1, wireRefs: 1, owner: owner)
 
 proc exportBehavior*(tables: ReferenceTables; position: int64): BehaviorRef =
   let slot = tables.exports.getOrDefault(position)
@@ -70,6 +81,12 @@ proc releaseExportDelta*(tables: var ReferenceTables; position, delta: int64): b
     if not tables.exports[position].live:
       tables.exports.del(position)
   true
+
+proc releaseWireExport*(tables: var ReferenceTables; reference: CapabilityRef;
+                        delta: int64): bool =
+  if reference.kind != rkExport:
+    raise newException(ReferenceError, "wire GC requires an export descriptor")
+  tables.releaseExportDelta(reference.position, delta)
 
 proc retainImport*(tables: var ReferenceTables; position: int64) =
   tables.imports[position] = tables.imports.getOrDefault(position) + 1
