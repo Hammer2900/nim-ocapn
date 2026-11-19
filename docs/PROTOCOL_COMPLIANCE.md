@@ -1,6 +1,6 @@
 # Protocol Compliance Audit
 
-Audit scope: `nim-ocapn` at `e2ea801` plus the Batch A worktree changes, local drafts in `../ocapn`, and the
+Audit scope: `nim-ocapn` at `31012070f3d8291b7177640b186e10060972b245`, local drafts in `../ocapn`, and the
 official repository revision currently published on `main`. The OCapN documents
 explicitly warn that they are drafts; this is a profile assessment, not a
 claim of final standard compliance.
@@ -33,7 +33,7 @@ and limitation notes follow the table.
 | NL-05 | Transport-neutral CapTP behavior | `tests/test_transport_conformance.nim`, `tests/tls_peer.nim` | `nimble transportConformanceTest` | COMPLETE for in-memory/TCP/TLS tested cases; Onion conditional |
 | ID-03 | Explicit expected-peer policy and durable wire key | `src/identity.nim`, `src/session.nim`, `src/api.nim`, `src/server.nim` | `tests/test_identity.nim` | COMPLETE for exact session-key policy |
 | ID-04 | Locator/session identity binding | `src/session.nim:setExpectedPeer`, `src/api.nim`, `src/handoff.nim` | `tests/test_identity.nim` | PARTIAL: strict signed-locator/key binding; Onion ownership unproven |
-| NL-03 | Authenticated netlayer evidence | `src/transport.nim:authenticationEvidence`, `src/session.nim` | `tests/test_identity.nim` contract/negative tests | PARTIAL: seam and fail-closed policy; no production adapter |
+| NL-03 | Authenticated netlayer evidence | `src/transport.nim:authenticationEvidence`, `src/session.nim`, `src/tls_transport.nim` | `tests/test_identity.nim`, `nimble tlsTest` | PARTIAL: project-specific mutual-TLS provider; no official OCapN profile |
 | NL-04 | Authenticated channel provider | `src/tls_transport.nim` | `nimble tlsTest` | PARTIAL: real two-process project TLS profile; not official OCapN interop |
 
 | Requirement | Specification / implementation | Status | Tests / problem |
@@ -75,8 +75,9 @@ and limitation notes follow the table.
   it reports unsupported peer capabilities separately from failures.
 - `api.nim`: `Node`, typed arguments, public capability/promise operations,
   polling, stats, handoff and shutdown.
-- `crypto.nim`: OpenSSL-backed Ed25519/SHA-256 primitives; no key store or
-  node identity authority is provided.
+- `crypto.nim`, `identity.nim`: OpenSSL-backed Ed25519/SHA-256 primitives and
+  versioned durable node identity storage; transport identity remains a
+  separate netlayer concern.
 
 ## Batch B evidence and limits
 
@@ -88,10 +89,12 @@ binding has been implemented.
 
 ## Evidence and limits
 
-The strongest verified profile is CapTP over testing-only TCP, with Nim↔Nim
-and Glowcap interoperability. A successful `.onion` call proves routing and
-CapTP operation, not locator-to-identity authentication. The official draft
-specifications remain normative inputs but are not version-pinned releases.
+The strongest verified profiles are CapTP over testing-only TCP for broad
+interoperability and the project-specific mutual-TLS profile for authenticated
+two-process Nim↔Nim tests. A successful `.onion` call proves routing and CapTP
+operation, not locator-to-identity authentication. The official draft
+specifications are pinned inputs, but remain draft documents rather than a
+stable OCapN release.
 
 Sources: [`CapTP Specification.md`](../../ocapn/draft-specifications/CapTP%20Specification.md),
 [`Locators.md`](../../ocapn/draft-specifications/Locators.md),

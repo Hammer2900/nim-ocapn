@@ -16,8 +16,9 @@
 The next security batch must define and test the authenticated netlayer
 contract before changing the wire identity or marking Onion peers verified.
 
-This roadmap is based on the draft OCapN documents and the audit of commit
-`e2ea801`. It does not change the wire format, tags, or release metadata.
+This roadmap is based on the pinned draft OCapN documents and the audit of
+commit `31012070f3d8291b7177640b186e10060972b245`. It does not change the
+wire format, tags, or release metadata.
 
 ## P0 — correctness, security, interoperability
 

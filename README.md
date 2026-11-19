@@ -58,9 +58,7 @@ VM, persistence layer, or Goblins port.
 
 ## Quick start
 
-The package is currently installed from Git or a local checkout. The
-repository is private in this development snapshot, so Git authentication may
-be required:
+The package is currently installed from Git or a local checkout:
 
 ```sh
 nimble install 'git+https://github.com/Hammer2900/nim-ocapn.git@4464f2fedf0f081898bf0d9f6ce39568bcd543cd'

@@ -7,7 +7,8 @@ reference, handoff, and transport lifecycle to the existing implementation.
 ## Durable identity and node configuration
 
 ```nim
-import ../src/[api, syrup]
+import nimocapn
+import syrup
 
 var config = defaultNodeConfig(Port(42030))
 config.identityPath = "server.identity"
