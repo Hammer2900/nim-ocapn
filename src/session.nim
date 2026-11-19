@@ -533,12 +533,16 @@ proc verifyPeerPolicy(session: Session): bool =
     true
   of pvmAuthenticatedNetlayer:
     let evidence = session.transport.authenticationEvidence()
-    if not evidence.authenticated or not evidence.channelIntegrity or
-        evidence.proofType != externalAuthenticatedChannel or
-        evidence.peerIdentity.len != 32 or
-        evidence.peerIdentity != session.remotePublicKey or
+    if evidence.peerIdentity.len == 0 and
+        not session.transport.bindPeerIdentity(session.remotePublicKey):
+      raise newException(SessionError, "authenticated netlayer cannot bind CapTP identity")
+    let boundEvidence = session.transport.authenticationEvidence()
+    if not boundEvidence.authenticated or not boundEvidence.channelIntegrity or
+        boundEvidence.proofType != externalAuthenticatedChannel or
+        boundEvidence.peerIdentity.len != 32 or
+        boundEvidence.peerIdentity != session.remotePublicKey or
         session.verificationPolicy.transportVerifier.isNil or
-        not session.verificationPolicy.transportVerifier(evidence, session.remotePublicKey):
+        not session.verificationPolicy.transportVerifier(boundEvidence, session.remotePublicKey):
       raise newException(SessionError, "authenticated netlayer identity is unavailable")
     session.transportAuthenticated = true
     true
@@ -1585,9 +1589,9 @@ proc pump*(session: Session): bool =
     if error.msg.contains("frame") or error.msg.contains("queue limit"):
       session.diagnostic(dekResourceLimit, decResource, "session resource limit exceeded")
     elif session.state == ssNegotiating:
-      session.diagnostic(dekHandshakeFailure, decHandshake, "handshake failed")
+      session.diagnostic(dekHandshakeFailure, decHandshake, "handshake failed: " & error.msg)
     else:
-      session.diagnostic(dekTransportError, decTransport, "transport or protocol error")
+      session.diagnostic(dekTransportError, decTransport, "transport or protocol error: " & error.msg)
     session.traceLifecycle("protocol:error", "-", "closed", error.msg)
     if session.state != ssClosed:
       try:

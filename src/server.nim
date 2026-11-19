@@ -1,5 +1,5 @@
-import std/[net, selectors, sequtils, tables, times, monotimes]
-import ./[gifts, identity, session, transport]
+import std/[net, nativesockets, selectors, sequtils, strutils, tables, times, monotimes]
+import ./[gifts, identity, locators, session, transport]
 
 type
   TcpManagerStats* = object
@@ -14,9 +14,12 @@ type
     depositedGifts*: int
     pendingGiftWithdraws*: int
   SessionHandler* = proc(session: Session) {.closure.}
+  AcceptedTransport* = tuple[transport: Transport, fd: int, glowcap: bool]
+  AcceptTransport* = proc(socket: owned Socket): AcceptedTransport {.closure.}
   SessionSlot = ref object
     session: Session
-    transport: TcpTransport
+    transport: Transport
+    fd: int
     openNotified: bool
     acceptedAt: float
     registered: bool
@@ -27,6 +30,7 @@ type
     seedPrefix: string
     hostPort: string
     onOpen: SessionHandler
+    acceptTransport: AcceptTransport
     handshakeTimeoutMs: int
     gifts*: GiftTable
     forwardedRegistry*: ForwardedPromiseRegistry
@@ -49,7 +53,8 @@ proc newTcpSessionManager*(host: string; port: Port; seedPrefix, hostPort: strin
                            identity: NodeIdentity = nil;
                            maxActiveSessions = 256;
                            diagnosticSink: DiagnosticSink = nil;
-                           sessionIdentityMode = simPerSession): TcpSessionManager =
+                           sessionIdentityMode = simPerSession;
+                           acceptTransport: AcceptTransport = nil): TcpSessionManager =
   validateSessionLimits(limits)
   validatePolicy(verificationPolicy)
   if verificationPolicy.mode != pvmTestingOnly and identity.isNil:
@@ -61,6 +66,7 @@ proc newTcpSessionManager*(host: string; port: Port; seedPrefix, hostPort: strin
   result = TcpSessionManager(listener: listenTcp(host, port),
     selector: newSelector[SessionSlot](), slots: initTable[int, SessionSlot](),
     seedPrefix: seedPrefix, hostPort: hostPort, onOpen: onOpen,
+    acceptTransport: acceptTransport,
     handshakeTimeoutMs: handshakeTimeoutMs, gifts: newGiftTable(),
     forwardedRegistry: ForwardedPromiseRegistry(
       origins: initTable[ForwardedPromiseKey, ForwardedPromiseOrigin](),
@@ -110,23 +116,45 @@ proc acceptReady(manager: TcpSessionManager) =
       rejected.close()
       manager.reportLimit()
       return
-    let transport = manager.listener.acceptTcp()
-    transport.setNonBlocking()
+    let raw = manager.listener.acceptRawTcpSocket()
+    let rawFd = int(raw.getFd())
+    let accepted = if manager.acceptTransport.isNil:
+        (transport: Transport(newTcpTransportFromSocket(raw)), fd: rawFd, glowcap: true)
+      else:
+        manager.acceptTransport(raw)
+    let transport = accepted.transport
+    if transport.isNil or accepted.fd < 0:
+      raise newException(TransportError, "transport acceptor returned nil")
+    if transport of TcpTransport:
+      TcpTransport(transport).setNonBlocking()
     var seed = ""
     if manager.sessionIdentityMode == simLegacyDurable:
       seed = manager.identity.sessionSeed()
-    let session = newGlowcapSession(transport, seed, manager.hostPort, manager.limits,
-      manager.verificationPolicy)
+    let tlsLocation = block:
+      let separator = manager.hostPort.rfind(':')
+      if separator > 0:
+        newPeerLocator("tls-testing-only", manager.hostPort,
+          [("host", manager.hostPort[0 ..< separator]),
+           ("port", manager.hostPort[separator + 1 ..^ 1])]).peerUri()
+      else:
+        manager.hostPort
+    let session = if accepted.glowcap:
+        newGlowcapSession(transport, seed, manager.hostPort, manager.limits,
+          manager.verificationPolicy)
+      else:
+        newSession(transport, seed, tlsLocation, manager.limits,
+          manager.verificationPolicy)
     session.forwardedRegistry = manager.forwardedRegistry
     session.setTraceSink(manager.traceNodeId, manager.traceSink)
     session.setDiagnosticSink(manager.diagnosticNodeId, manager.diagnosticSink)
     session.gifts = manager.gifts
     session.ownsGifts = false
-    let slot = SessionSlot(session: session, transport: transport, openNotified: false,
+    let slot = SessionSlot(session: session, transport: transport,
+      fd: accepted.fd, openNotified: false,
       acceptedAt: epochTime(), registered: true)
-    let fd = int(transport.socketHandle())
+    let fd = slot.fd
     manager.slots[fd] = slot
-    manager.selector.registerHandle(transport.socketHandle(), {Read}, slot)
+    manager.selector.registerHandle(SocketHandle(slot.fd), {Read}, slot)
   except CatchableError:
     discard
 
@@ -155,7 +183,7 @@ proc poll*(manager: TcpSessionManager; timeoutMs = 1000; maxWork = 64): int =
         manager.removeSlot(ready.fd)
       else:
         let events = if slot.transport.wantsWrite(): {Read, Write} else: {Read}
-        manager.selector.registerHandle(slot.transport.socketHandle(), events, slot)
+        manager.selector.registerHandle(SocketHandle(slot.fd), events, slot)
         slot.registered = true
       inc handled
     except CatchableError:

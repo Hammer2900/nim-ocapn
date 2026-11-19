@@ -18,6 +18,7 @@ type
     caFile*: string
     expectedPeerCertificateFingerprint*: string
     expectedPeerCapTpKey*: string
+    allowUnpinnedPeerCapTpKey*: bool
     serverName*: string
     maxOutputBytes*: int
   TlsTransport* = ref object of Transport
@@ -32,8 +33,12 @@ type
 proc validateConfig(config: TlsTransportConfig) =
   if config.certificateFile.len == 0 or config.privateKeyFile.len == 0 or
       config.caFile.len == 0 or config.expectedPeerCertificateFingerprint.len != 32 or
-      config.expectedPeerCapTpKey.len != 32:
+      (config.expectedPeerCapTpKey.len != 32 and
+       not (config.allowUnpinnedPeerCapTpKey and config.expectedPeerCapTpKey.len == 0)):
     raise newException(TlsTransportError, "TLS config requires certificates, CA, and exact peer bindings")
+
+proc validateTlsConfig*(config: TlsTransportConfig) =
+  config.validateConfig()
 
 proc makeContext(config: TlsTransportConfig): SslContext =
   try:
@@ -163,5 +168,12 @@ method waitReadable*(transport: TlsTransport; timeoutMs: int): bool =
 method peerIdentity*(transport: TlsTransport): string = transport.evidence.peerIdentity
 method peerAuthenticated*(transport: TlsTransport): bool = transport.evidence.authenticated
 method authenticationEvidence*(transport: TlsTransport): TransportAuthEvidence = transport.evidence
+
+method bindPeerIdentity*(transport: TlsTransport; captpPublicKey: string): bool =
+  if captpPublicKey.len != 32: return false
+  if transport.evidence.peerIdentity.len == 0:
+    transport.evidence.peerIdentity = captpPublicKey
+    return true
+  transport.evidence.peerIdentity == captpPublicKey
 
 proc socketHandle*(transport: TlsTransport): SocketHandle = transport.socket.getFd()

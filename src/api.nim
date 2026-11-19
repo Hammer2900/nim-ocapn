@@ -24,6 +24,8 @@ type
     maxActiveSessions*: int
     handshakeTimeoutMs*: int
     diagnosticSink*: DiagnosticSink
+    when defined(ssl):
+      tlsServerConfig*: TlsTransportConfig
   NodeStats* = object
     activeSessions*: int
     pendingPromises*: int
@@ -112,6 +114,7 @@ type
     seedPrefix: string
     onionConfig: OnionNetlayerConfig
     diagnosticSink: DiagnosticSink
+    listenerNetlayer: NetlayerKind
 
 export IdentityError, TransportAuthEvidence, TransportEvidenceVerifier,
   PeerVerificationMode, SessionIdentityMode, PeerVerificationPolicy, NodeIdentity,
@@ -123,6 +126,9 @@ export PeerLocator, SturdyRef, newPeerLocator, samePeer, peerSyrup, sturdySyrup,
 export DiagnosticEvent, DiagnosticSink, DiagnosticEventKind, DiagnosticErrorCategory
 export SessionLimits, SessionStats, SessionError, PromiseTimeoutError
 export HandoffLimits
+export Session, SessionState
+when defined(ssl):
+  export TlsTransportConfig, TlsTransportError, validateTlsConfig
 
 proc defaultNodeConfig*(port: Port = Port(0)): NodeConfig =
   NodeConfig(host: "127.0.0.1", port: port, seedPrefix: "nim-node",
@@ -147,7 +153,7 @@ proc installTyped(node: Node; session: Session; name: string;
       args: seq[SyrupValue]): SyrupValue =
     invokeTyped(node, actor, handler, args))
 
-proc newNode*(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
+proc newNodeImpl(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
               limits = defaultSessionLimits();
               handoffLimits = HandoffLimits(maxPending: 256);
               identity: NodeIdentity = nil;
@@ -155,11 +161,14 @@ proc newNode*(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
               maxActiveSessions = 256;
               handshakeTimeoutMs = 30000;
               diagnosticSink: DiagnosticSink = nil;
-              sessionIdentityMode = simPerSession): Node =
+              sessionIdentityMode = simPerSession;
+              acceptTransport: AcceptTransport = nil;
+              listenerNetlayer = nlkTcpTestingOnly): Node =
   new(result)
   result.host = host
   result.port = port
   result.seedPrefix = seedPrefix
+  result.listenerNetlayer = listenerNetlayer
   result.onionConfig = defaultOnionNetlayerConfig()
   result.diagnosticSink = diagnosticSink
   result.identity = identity
@@ -195,22 +204,49 @@ proc newNode*(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
     limits = limits, verificationPolicy = verificationPolicy, identity = identity,
     handshakeTimeoutMs = handshakeTimeoutMs,
     maxActiveSessions = maxActiveSessions,
-    sessionIdentityMode = sessionIdentityMode)
+    sessionIdentityMode = sessionIdentityMode, acceptTransport = acceptTransport)
   result.manager.setDiagnosticSink(seedPrefix, diagnosticSink)
 
+proc newNode*(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
+              limits = defaultSessionLimits();
+              handoffLimits = HandoffLimits(maxPending: 256);
+              identity: NodeIdentity = nil;
+              verificationPolicy = testingOnlyPeerPolicy;
+              maxActiveSessions = 256;
+              handshakeTimeoutMs = 30000;
+              diagnosticSink: DiagnosticSink = nil;
+              sessionIdentityMode = simPerSession): Node =
+  newNodeImpl(host, port, seedPrefix, limits, handoffLimits, identity,
+    verificationPolicy, maxActiveSessions, handshakeTimeoutMs, diagnosticSink,
+    sessionIdentityMode)
+
 proc newNode*(config: NodeConfig): Node =
-  if config.netlayer != nlkTcpTestingOnly:
+  if config.netlayer notin {nlkTcpTestingOnly, nlkMutualTls}:
     raise newException(SessionError,
       "Node listeners use TCP; select Onion or mutual TLS when connecting with connectUsing")
+  when not defined(ssl):
+    if config.netlayer == nlkMutualTls:
+      raise newException(SessionError, "mutual TLS requires -d:ssl")
   var identity = config.identity
   if identity.isNil and config.identityPath.len > 0:
     identity = loadNodeIdentity(config.identityPath)
   if config.sessionIdentityMode == simLegacyDurable and identity.isNil:
     raise newException(IdentityError, "legacy durable session identity requires node identity")
-  result = newNode(config.host, config.port, config.seedPrefix, config.sessionLimits,
+  var acceptTransport: AcceptTransport
+  when defined(ssl):
+    if config.netlayer == nlkMutualTls:
+      if config.verificationPolicy.mode != pvmAuthenticatedNetlayer:
+        raise newException(SessionError,
+          "mutual TLS listener requires authenticated netlayer peer policy")
+      validateTlsConfig(config.tlsServerConfig)
+      let tlsConfig = config.tlsServerConfig
+      acceptTransport = proc(socket: owned Socket): AcceptedTransport =
+        let transport = newTlsServer(socket, tlsConfig)
+        (transport: Transport(transport), fd: int(transport.socketHandle()), glowcap: false)
+  result = newNodeImpl(config.host, config.port, config.seedPrefix, config.sessionLimits,
     config.handoffLimits, identity, config.verificationPolicy,
     config.maxActiveSessions, config.handshakeTimeoutMs, config.diagnosticSink,
-    config.sessionIdentityMode)
+    config.sessionIdentityMode, acceptTransport, config.netlayer)
   result.onionConfig = config.onionConfig
 
 proc setTraceSink*(node: Node; nodeId: string; sink: TraceSink) =
@@ -662,11 +698,14 @@ proc connectUsing*(node: Node; peer: PeerLocator; netlayer: NetlayerKind;
 when defined(ssl):
   proc connectMutualTls*(node: Node; host: string; port: Port;
                          config: TlsTransportConfig;
-                         maxPumps = 10000): Session =
+                         maxPumps = 10000; seed = ""): Session =
+    if node.verificationPolicy.mode != pvmAuthenticatedNetlayer:
+      raise newException(SessionError,
+        "mutual TLS requires authenticated netlayer peer policy")
     let transport = newTlsClient(host, port, config)
     let peer = newPeerLocator("tls-testing-only", host & ":" & $port,
       [("host", host), ("port", $port)])
-    let session = newSession(transport, node.sessionSeed(""), peer.peerUri(),
+    let session = newSession(transport, node.sessionSeed(seed), peer.peerUri(),
       node.sessionLimits, node.verificationPolicy)
     result = waitForHandshake(node.registerOutbound(session, peer,
       node.verificationPolicy), maxPumps)
@@ -675,7 +714,8 @@ proc listenPort*(node: Node): Port =
   node.manager.listenPort()
 
 proc locator*(node: Node): PeerLocator =
-  newPeerLocator("tcp", node.host & ":" & $node.listenPort(),
+  let transport = if node.listenerNetlayer == nlkMutualTls: "tls-testing-only" else: "tcp"
+  newPeerLocator(transport, node.host & ":" & $node.listenPort(),
     [("host", node.host), ("port", $node.listenPort())])
 
 proc bootstrap*(node: Node; session: Session; name: string;
@@ -720,6 +760,9 @@ proc waitFor*(session: Session; promise: Promise; maxPumps = 10000): SyrupValue 
 
 proc cancelCall*(session: Session; promise: Promise; reason = "call cancelled"): bool =
   sessionApi.cancel(session, promise, reason)
+
+proc closeSession*(session: Session; reason = "session closed") =
+  session.close(reason)
 
 proc waitForCallTimeout*(session: Session; promise: Promise; timeoutMs: int): SyrupValue =
   sessionApi.waitForTimeout(session, promise, timeoutMs)

@@ -58,6 +58,11 @@ method peerAuthenticated*(transport: Transport): bool {.base.} = false
 method authenticationEvidence*(transport: Transport): TransportAuthEvidence {.base.} =
   TransportAuthEvidence()
 
+method bindPeerIdentity*(transport: Transport; captpPublicKey: string): bool {.base.} =
+  discard transport
+  discard captpPublicKey
+  false
+
 method send*(transport: InMemoryTransport; payload: string) =
   if transport.closed or transport.peer.isNil or transport.peer.closed:
     raise newException(TransportError, "in-memory transport is closed")
