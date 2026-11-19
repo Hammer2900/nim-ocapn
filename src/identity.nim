@@ -18,6 +18,9 @@ type
     pvmTestingOnly
     pvmExactIdentity
     pvmAuthenticatedNetlayer
+  SessionIdentityMode* = enum
+    simPerSession
+    simLegacyDurable
   PeerVerificationPolicy* = object
     mode*: PeerVerificationMode
     expectedPublicKey*: string

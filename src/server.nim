@@ -27,7 +27,6 @@ type
     seedPrefix: string
     hostPort: string
     onOpen: SessionHandler
-    nextSeed: int
     handshakeTimeoutMs: int
     gifts*: GiftTable
     forwardedRegistry*: ForwardedPromiseRegistry
@@ -36,6 +35,7 @@ type
     limits: SessionLimits
     verificationPolicy*: PeerVerificationPolicy
     identity*: NodeIdentity
+    sessionIdentityMode*: SessionIdentityMode
     maxActiveSessions*: int
     diagnosticSink*: DiagnosticSink
     diagnosticNodeId*: string
@@ -48,21 +48,25 @@ proc newTcpSessionManager*(host: string; port: Port; seedPrefix, hostPort: strin
                            verificationPolicy = testingOnlyPeerPolicy;
                            identity: NodeIdentity = nil;
                            maxActiveSessions = 256;
-                           diagnosticSink: DiagnosticSink = nil): TcpSessionManager =
+                           diagnosticSink: DiagnosticSink = nil;
+                           sessionIdentityMode = simPerSession): TcpSessionManager =
   validateSessionLimits(limits)
   validatePolicy(verificationPolicy)
   if verificationPolicy.mode != pvmTestingOnly and identity.isNil:
     raise newException(IdentityError, "strict peer policy requires durable node identity")
+  if sessionIdentityMode == simLegacyDurable and identity.isNil:
+    raise newException(IdentityError, "legacy durable session identity requires node identity")
   if maxActiveSessions <= 0:
     raise newException(SessionError, "max active sessions must be positive")
   result = TcpSessionManager(listener: listenTcp(host, port),
     selector: newSelector[SessionSlot](), slots: initTable[int, SessionSlot](),
-    seedPrefix: seedPrefix, hostPort: hostPort, onOpen: onOpen, nextSeed: 0,
+    seedPrefix: seedPrefix, hostPort: hostPort, onOpen: onOpen,
     handshakeTimeoutMs: handshakeTimeoutMs, gifts: newGiftTable(),
     forwardedRegistry: ForwardedPromiseRegistry(
       origins: initTable[ForwardedPromiseKey, ForwardedPromiseOrigin](),
       retired: initTable[ForwardedPromiseKey, string]()),
     limits: limits, verificationPolicy: verificationPolicy, identity: identity,
+    sessionIdentityMode: sessionIdentityMode,
     maxActiveSessions: maxActiveSessions, diagnosticSink: diagnosticSink)
   if port == Port(0):
     result.hostPort = host & ":" & $result.listener.localPort()
@@ -108,14 +112,8 @@ proc acceptReady(manager: TcpSessionManager) =
       return
     let transport = manager.listener.acceptTcp()
     transport.setNonBlocking()
-    var seed: string
-    if manager.identity.isNil:
-      seed = manager.seedPrefix
-      while seed.len < 32: seed.add('x')
-      seed.setLen(32)
-      seed[0] = char(ord('a') + manager.nextSeed mod 26)
-      inc manager.nextSeed
-    else:
+    var seed = ""
+    if manager.sessionIdentityMode == simLegacyDurable:
       seed = manager.identity.sessionSeed()
     let session = newGlowcapSession(transport, seed, manager.hostPort, manager.limits,
       manager.verificationPolicy)

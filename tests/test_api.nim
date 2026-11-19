@@ -556,3 +556,59 @@ suite "public node lifecycle":
     nodeC.close()
     nodeB.close()
     nodeA.close()
+
+  test "round trips a capability through a forwarding cycle":
+    var forwarded: Promise
+    let nodeA = newNode(port = Port(0), seedPrefix = "cycle-a")
+    let nodeB = newNode(port = Port(0), seedPrefix = "cycle-b")
+    nodeB.publishTyped("roundTrip", proc(session: Session;
+        args: seq[ReceivedArgument]): SyrupValue =
+      if args.len != 1 or args[0].kind != rakCapability:
+        raise newException(SessionError, "roundTrip expects one capability")
+      let answer = session.deferAnswer()
+      forwarded = args[0].capability.call("greet", [text("world")])
+      forwarded.onSettle(proc(result: Promise) =
+        if result.state == psFulfilled:
+          session.fulfillAnswer(answer, result.value)
+        else:
+          session.breakAnswer(answer, result.reason))
+      list())
+    let aToB = nodeA.dial("127.0.0.1", nodeB.manager.listenPort(), repeat('a', 32))
+    proc pumpAll() =
+      discard nodeA.poll(1)
+      discard nodeB.poll(1)
+
+    var spins = 0
+    while aToB.state != ssOpen:
+      inc spins
+      if spins > 4000: raise newException(CatchableError, "cycle handshake timeout")
+      pumpAll()
+    let originRef = aToB.publishActor("origin", proc(actor: Session;
+        args: seq[SyrupValue]): SyrupValue =
+      if args.len == 2 and args[0].kind == skSymbol and args[0].data == "greet":
+        text("cycle reply: " & args[1].data)
+      else:
+        raise newException(SessionError, "origin expects greet and one argument"))
+    let roundTripP = sessionApi.fetch(aToB, "roundTrip")
+    while not settled(roundTripP):
+      inc spins
+      if spins > 8000: raise newException(CatchableError, "cycle fetch timeout")
+      pumpAll()
+    let origin = RemoteCapability(session: aToB, reference: originRef)
+    let roundTrip = RemoteCapability(session: aToB,
+      reference: roundTripP.value.descriptor())
+    let result = nodeA.call(roundTrip, "roundTrip", [capabilityArg(origin)])
+    while not settled(result) or forwarded.isNil or not settled(forwarded):
+      inc spins
+      if spins > 16000: raise newException(CatchableError, "cycle forwarding timeout")
+      pumpAll()
+    check result.state == psFulfilled
+    check result.value.data == "cycle reply: world"
+    check forwarded.state == psFulfilled
+    check forwarded.value.data == "cycle reply: world"
+    nodeB.close()
+    nodeA.close()
+    check nodeA.stats().pendingPromises == 0
+    check nodeB.stats().pendingPromises == 0
+    check nodeA.stats().activeSessions == 0
+    check nodeB.stats().activeSessions == 0

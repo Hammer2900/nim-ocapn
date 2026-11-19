@@ -3,6 +3,16 @@
 This matrix records runs against unmodified peers. Nim↔Nim tests are reported
 elsewhere and are not evidence of independent interoperability.
 
+The default Nim Node profile now uses a fresh CapTP Ed25519 key per Session.
+The exact-key and authenticated-TLS rows below therefore refer to the current
+session key, not the durable Node identity. Legacy peers that require a stable
+wire key must be exercised explicitly with `simLegacyDurable`; no automatic
+downgrade is performed.
+
+The P9 local cycle regression (`tests/test_api.nim`, A→B→A capability
+forwarding) is protocol-lifecycle evidence only; it is not an independent-peer
+interoperability result.
+
 ## Peer baseline
 
 | Peer | Revision | Runtime/profile | Transport |
@@ -51,6 +61,7 @@ source was changed. The reproducible runner is `nimble interopTest`.
 | Repeated session while peer stays alive | Nim ↔ Guile Goblins | Goblins OCapN test-suite | PASS | Local SIGPIPE-safe wrapper keeps the pinned fixture alive for two independent Nim sessions |
 | Restarted peer bootstrap/invocation | Nim → Guile Goblins | Goblins OCapN test-suite | PASS | Runner stops and starts two independent Goblins processes and invokes the published echo capability in both |
 | Durable-identity reconnect | Nim ↔ Guile Goblins | Goblins OCapN test-suite | UNVERIFIED | `spawn-mycapn` creates the CapTP session key inside each process; the pinned TCP fixture exposes no persistent identity input |
+| Per-session key rotation | Nim ↔ Nim | default strict profile | PASS | `tests/test_identity.nim`: independent Sessions and reconnects have distinct wire keys while `Node.publicIdentity()` remains stable |
 | Strict `op:listen` modes 1/2/3 | Nim ↔ Guile Goblins | strict CapTP vs Goblins legacy listener profile | UNVERIFIED | Goblins 0.18 exposes the boolean `wants-partial` wire form, not selectable strict modes 1/2/3; upstream → Goblins listen remains a separate PASS |
 | Promise pipelining | Nim ↔ Guile Goblins | CapTP v1 | UNVERIFIED | The pinned Goblins fixture has no bounded Nim-facing pipeline driver beyond the upstream suite |
 | Cross-peer handoff | Nim ↔ Guile Goblins | CapTP v1 | UNVERIFIED | Handoff is exercised upstream → Goblins; no public Goblins fixture API exposes a Nim-originated handoff scenario |

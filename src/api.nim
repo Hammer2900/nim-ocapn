@@ -15,6 +15,7 @@ type
     seedPrefix*: string
     identity*: NodeIdentity
     identityPath*: string
+    sessionIdentityMode*: SessionIdentityMode
     verificationPolicy*: PeerVerificationPolicy
     netlayer*: NetlayerKind
     sessionLimits*: SessionLimits
@@ -98,6 +99,7 @@ type
     handoffs*: HandoffManager
     identity*: NodeIdentity
     verificationPolicy*: PeerVerificationPolicy
+    sessionIdentityMode*: SessionIdentityMode
     publications: Table[string, Behavior]
     typedPublications: Table[string, TypedBehavior]
     handoffEnliveners: seq[string]
@@ -118,6 +120,7 @@ export HandoffLimits
 
 proc defaultNodeConfig*(port: Port = Port(0)): NodeConfig =
   NodeConfig(host: "127.0.0.1", port: port, seedPrefix: "nim-node",
+    identity: nil, identityPath: "", sessionIdentityMode: simPerSession,
     verificationPolicy: testingOnlyPeerPolicy, netlayer: nlkTcpTestingOnly,
     sessionLimits: defaultSessionLimits(), handoffLimits: HandoffLimits(maxPending: 256),
     onionConfig: defaultOnionNetlayerConfig(), maxActiveSessions: 256,
@@ -145,7 +148,8 @@ proc newNode*(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
               verificationPolicy = testingOnlyPeerPolicy;
               maxActiveSessions = 256;
               handshakeTimeoutMs = 30000;
-              diagnosticSink: DiagnosticSink = nil): Node =
+              diagnosticSink: DiagnosticSink = nil;
+              sessionIdentityMode = simPerSession): Node =
   new(result)
   result.host = host
   result.port = port
@@ -154,6 +158,7 @@ proc newNode*(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
   result.diagnosticSink = diagnosticSink
   result.identity = identity
   result.verificationPolicy = verificationPolicy
+  result.sessionIdentityMode = sessionIdentityMode
   if verificationPolicy.mode != pvmTestingOnly and identity.isNil:
     raise newException(IdentityError, "strict peer policy requires durable node identity")
   result.publications = initTable[string, Behavior]()
@@ -163,7 +168,8 @@ proc newNode*(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
   result.outboundCursor = 0
   result.sessionLimits = limits
   result.sturdyCache = initTable[string, RemoteCapability]()
-  result.handoffs = newHandoffManager(handoffLimits, limits, verificationPolicy, identity)
+  result.handoffs = newHandoffManager(handoffLimits, limits, verificationPolicy, identity,
+    sessionIdentityMode)
   result.handoffs.setDiagnosticSink(seedPrefix, diagnosticSink)
   let node = result
   result.manager = newTcpSessionManager(host, port, seedPrefix, host & ":" & $port,
@@ -182,7 +188,8 @@ proc newNode*(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
           list()),
     limits = limits, verificationPolicy = verificationPolicy, identity = identity,
     handshakeTimeoutMs = handshakeTimeoutMs,
-    maxActiveSessions = maxActiveSessions)
+    maxActiveSessions = maxActiveSessions,
+    sessionIdentityMode = sessionIdentityMode)
   result.manager.setDiagnosticSink(seedPrefix, diagnosticSink)
 
 proc newNode*(config: NodeConfig): Node =
@@ -192,9 +199,12 @@ proc newNode*(config: NodeConfig): Node =
   var identity = config.identity
   if identity.isNil and config.identityPath.len > 0:
     identity = loadNodeIdentity(config.identityPath)
+  if config.sessionIdentityMode == simLegacyDurable and identity.isNil:
+    raise newException(IdentityError, "legacy durable session identity requires node identity")
   result = newNode(config.host, config.port, config.seedPrefix, config.sessionLimits,
     config.handoffLimits, identity, config.verificationPolicy,
-    config.maxActiveSessions, config.handshakeTimeoutMs, config.diagnosticSink)
+    config.maxActiveSessions, config.handshakeTimeoutMs, config.diagnosticSink,
+    config.sessionIdentityMode)
   result.onionConfig = config.onionConfig
 
 proc setTraceSink*(node: Node; nodeId: string; sink: TraceSink) =
@@ -565,7 +575,7 @@ proc stats*(node: Node): NodeStats =
   result.pendingHandoffs = handoffStats.pendingEnliven + handoffStats.pendingReceives
 
 proc dial*(node: Node; host: string; port: Port;
-           seed = "cccccccccccccccccccccccccccccccc"): Session
+           seed = ""): Session
 
 proc registerOutbound(node: Node; session: Session; peer: PeerLocator;
                       policy: PeerVerificationPolicy): Session =
@@ -589,14 +599,16 @@ proc waitForHandshake(session: Session; maxPumps: int): Session =
   session
 
 proc sessionSeed(node: Node; fallback: string): string =
-  if node.identity.isNil: fallback else: node.identity.sessionSeed()
+  if node.sessionIdentityMode == simLegacyDurable:
+    node.identity.sessionSeed()
+  else:
+    fallback
 
-proc connect*(node: Node; host: string; port: Port; seed = "cccccccccccccccccccccccccccccccc";
+proc connect*(node: Node; host: string; port: Port; seed = "";
               maxPumps = 10000): Session =
   result = waitForHandshake(node.dial(host, port, seed), maxPumps)
 
-proc dial*(node: Node; host: string; port: Port;
-           seed = "cccccccccccccccccccccccccccccccc"): Session =
+proc dial*(node: Node; host: string; port: Port; seed = ""): Session =
   let tcp = connectTcp(host, port)
   tcp.setNonBlocking()
   let actualSeed = node.sessionSeed(seed)
@@ -607,7 +619,7 @@ proc dial*(node: Node; host: string; port: Port;
   result = node.registerOutbound(result, peer, node.verificationPolicy)
 
 proc connect*(node: Node; peer: PeerLocator;
-              seed = "cccccccccccccccccccccccccccccccc";
+              seed = "";
               maxPumps = 10000): Session =
   if peer.transport == "onion":
     let onionTransport = newOnionNetlayer().dial(peer)
@@ -622,7 +634,7 @@ proc connect*(node: Node; peer: PeerLocator;
   node.connect(host, port, seed, maxPumps)
 
 proc connectUsing*(node: Node; peer: PeerLocator; netlayer: NetlayerKind;
-                   seed = "cccccccccccccccccccccccccccccccc";
+                   seed = "";
                    maxPumps = 10000): Session =
   case netlayer
   of nlkTcpTestingOnly:
@@ -648,7 +660,7 @@ when defined(ssl):
     let transport = newTlsClient(host, port, config)
     let peer = newPeerLocator("tls-testing-only", host & ":" & $port,
       [("host", host), ("port", $port)])
-    let session = newSession(transport, node.sessionSeed(node.seedPrefix), peer.peerUri(),
+    let session = newSession(transport, node.sessionSeed(""), peer.peerUri(),
       node.sessionLimits, node.verificationPolicy)
     result = waitForHandshake(node.registerOutbound(session, peer,
       node.verificationPolicy), maxPumps)
@@ -667,7 +679,7 @@ proc bootstrap*(node: Node; session: Session; name: string;
   result.reference = sessionApi.waitFor(session, sessionApi.fetch(session, name), maxPumps).descriptor()
 
 proc connectVerified*(node: Node; host: string; port: Port; expectedPublicKey: string;
-                      seed = "cccccccccccccccccccccccccccccccc";
+                      seed = "";
                       maxPumps = 10000): Session =
   let policy = exactPeerPolicy(expectedPublicKey)
   let tcp = connectTcp(host, port)
@@ -680,7 +692,7 @@ proc connectVerified*(node: Node; host: string; port: Port; expectedPublicKey: s
   result = waitForHandshake(result, maxPumps)
 
 proc connectVerified*(node: Node; peer: PeerLocator; expectedPublicKey: string;
-                      seed = "cccccccccccccccccccccccccccccccc";
+                      seed = "";
                       maxPumps = 10000): Session =
   let policy = exactPeerPolicy(expectedPublicKey)
   if peer.transport != "onion":

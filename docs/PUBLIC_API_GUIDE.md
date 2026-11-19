@@ -14,6 +14,7 @@ var config = defaultNodeConfig(Port(42030))
 config.identityPath = "server.identity"
 config.netlayer = nlkTcpTestingOnly
 config.verificationPolicy = testingOnlyPeerPolicy
+# The default is simPerSession; every Session gets a fresh CapTP key.
 let node = newNode(config)
 echo node.publicIdentity()
 ```
@@ -22,6 +23,15 @@ echo node.publicIdentity()
 Loading is stable across restarts; a failed or corrupt load is not replaced
 silently. For authenticated peers use `exactPeerPolicy(publicKey)` or
 `authenticatedNetlayerPolicy(verifier)` explicitly.
+
+`Node.publicIdentity()` is the durable Node identity. It is not the CapTP key
+advertised by a default Session. `Session.localPublicKey` is per-session, so a
+reconnect intentionally has a different wire identity. Exact peer policy pins
+the current session key and therefore must be provisioned again for a new
+session. `SessionIdentityMode.simLegacyDurable` is available only as an
+explicit project-specific compatibility mode for peers that require the old
+durable wire key; it is never selected automatically and is not the strict
+profile.
 
 ## Server
 
@@ -72,3 +82,9 @@ The low-level `Session`, `CapabilityRef`, Syrup descriptors, and handoff APIs
 remain available for protocol tests and unusual integrations, but ordinary
 applications should use `Node`, `RemoteCapability`, `Node.bootstrap`, and
 `CallArgument` helpers.
+
+For v1 compatibility, only the `nimocapn` facade and the documented `api.nim`
+operations should be treated as stable. Direct mutable fields on `Node`,
+`Session`, `RemoteCapability`, and `RemotePromise`, plus direct reference-table
+or handoff-manager access, are experimental and may be hidden or changed
+before v1. They can bypass ownership and lifecycle invariants.

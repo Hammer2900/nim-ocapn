@@ -39,6 +39,7 @@ type
     sessionLimits: SessionLimits
     verificationPolicy: PeerVerificationPolicy
     identity: NodeIdentity
+    sessionIdentityMode: SessionIdentityMode
     outboundCursor: int
     receiverCursor: int
     traceSink: TraceSink
@@ -50,16 +51,19 @@ type
 proc newHandoffManager*(limits = HandoffLimits(maxPending: 256);
                         sessionLimits = defaultSessionLimits();
                         verificationPolicy = testingOnlyPeerPolicy;
-                        identity: NodeIdentity = nil): HandoffManager =
+                        identity: NodeIdentity = nil;
+                        sessionIdentityMode = simPerSession): HandoffManager =
   if limits.maxPending < 0:
     raise newException(SessionError, "handoff limits must not be negative")
   validatePolicy(verificationPolicy)
   if verificationPolicy.mode != pvmTestingOnly and identity.isNil:
     raise newException(IdentityError, "strict peer policy requires durable node identity")
+  if sessionIdentityMode == simLegacyDurable and identity.isNil:
+    raise newException(IdentityError, "legacy durable session identity requires node identity")
   HandoffManager(outboundSessions: @[], pendingEnliven: @[],
     receiverSessions: @[], pendingReceives: @[], limits: limits,
     sessionLimits: sessionLimits, verificationPolicy: verificationPolicy,
-    identity: identity,
+    identity: identity, sessionIdentityMode: sessionIdentityMode,
     nextHandoffCounts: initTable[string, int64]())
 
 proc ensureOpen(manager: HandoffManager) =
@@ -145,7 +149,10 @@ proc finishEnliven(manager: HandoffManager; item: PendingEnliven; promise: Promi
     item.source.breakAnswer(item.answer, error.msg)
 
 proc openHandoffSession(manager: HandoffManager; peer: PeerLocator): Session =
-  let seed = if manager.identity.isNil: newGiftId() else: manager.identity.sessionSeed()
+  let seed = if manager.sessionIdentityMode == simLegacyDurable:
+      manager.identity.sessionSeed()
+    else:
+      ""
   if peer.transport == "onion":
     let transport = newOnionNetlayer().dial(peer)
     result = newSession(transport, seed, peer.peerUri(), manager.sessionLimits,

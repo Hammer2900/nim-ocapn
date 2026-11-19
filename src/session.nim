@@ -1,4 +1,4 @@
-import std/[strutils, tables, monotimes]
+import std/[strutils, tables, monotimes, sysrand]
 import ./[crypto, framing, gifts, identity, locators, messages, promises, references, syrup, transport]
 
 type
@@ -172,6 +172,12 @@ proc defaultSessionLimits*(): SessionLimits =
     maxExports: 4096, maxImports: 4096, maxOutboundBytes: 1024 * 1024)
 
 proc sessionId*(session: Session): string
+
+proc freshSessionSeed(): string =
+  let randomBytes = urandom(32)
+  result = newString(randomBytes.len)
+  for index, value in randomBytes:
+    result[index] = char(value)
 
 proc setDiagnosticSink*(session: Session; nodeId: string; sink: DiagnosticSink) =
   session.diagnosticNodeId = nodeId
@@ -351,22 +357,24 @@ proc newBaseSession(transport: Transport; seed: string; limits: SessionLimits;
     TcpTransport(transport).maxOutputBytes = limits.maxOutboundBytes
 
 
-proc newSession*(transport: Transport; seed = "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn";
+proc newSession*(transport: Transport; seed = "";
                  location = "nim://in-memory";
                  limits = defaultSessionLimits();
                  verificationPolicy = testingOnlyPeerPolicy): Session =
-  result = newBaseSession(transport, seed, limits, verificationPolicy, 0, false)
-  let signature = crypto.sign(seed, location)
+  let actualSeed = if seed.len == 0: freshSessionSeed() else: seed
+  result = newBaseSession(transport, actualSeed, limits, verificationPolicy, 0, false)
+  let signature = crypto.sign(actualSeed, location)
   result.send(startSession(bytes(location), bytes(result.localPublicKey), bytes(signature)))
   result.sentHello = true
 
-proc newGlowcapSession*(transport: Transport; seed, hostPort: string;
+proc newGlowcapSession*(transport: Transport; seed = ""; hostPort = "";
                         limits = defaultSessionLimits();
                         verificationPolicy = testingOnlyPeerPolicy): Session =
-  result = newBaseSession(transport, seed, limits, verificationPolicy, 1, true)
+  let actualSeed = if seed.len == 0: freshSessionSeed() else: seed
+  result = newBaseSession(transport, actualSeed, limits, verificationPolicy, 1, true)
   let location = glowcapLocation(hostPort)
   let signedLocation = record(symbol("my-location"), location).encoded()
-  let signature = crypto.sign(seed, signedLocation)
+  let signature = crypto.sign(actualSeed, signedLocation)
   let hello = glowcapStartSession(location, glowcapPublicKey(result.localPublicKey), glowcapSignature(signature))
   result.send(hello)
   result.sentHello = true

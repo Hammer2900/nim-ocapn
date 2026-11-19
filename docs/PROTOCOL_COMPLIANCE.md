@@ -25,13 +25,13 @@ and limitation notes follow the table.
 | LO-02 | Locators: URI and equality | `src/locators.nim:peerUri`, `parse*Uri` | URI escaping, UTF-8, duplicate, empty-value, and fragment vectors | COMPLETE for tested grammar |
 | NL-01 | Netlayers: ordered bidirectional channel | `src/transport.nim`, `src/onion.nim` | TCP/Onion pipeline tests | PARTIAL: security boundary |
 | NL-02 | Netlayers: authenticated participant insertion | no production implementation | no authenticated-netlayer test | MISSING |
-| ID-01 | CapTP Ed25519/session identity | `src/crypto.nim`, `src/session.nim` | signature/session-id tests | COMPLETE for session profile |
+| ID-01 | CapTP Ed25519/session identity | `src/crypto.nim`, `src/session.nim`, `src/api.nim`, `src/server.nim` | `tests/test_identity.nim`, session-id tests | COMPLETE for the default per-session profile; explicit legacy durable mode remains project-specific |
 | ID-02 | Locator identity binding | `src/session.nim:verifyPeerPolicy` | `tests/test_identity.nim` locator substitution tests | PARTIAL: expected locator is checked; Tor designator ownership is not |
 | IX-01 | Independent peer interoperability | `tests/test_interop.py`, Glowcap profile | `nimble interopTest` | PARTIAL: two-way bootstrap/invocation PASS; advanced cases unsupported by peer CLI |
 | IX-02 | Bootstrap/sturdyref against a second independent peer | Goblins OCapN test-suite at pinned checkout | `nimble independentInteropTest` | PARTIAL: Nim bootstrap/sturdyref/invocation and isolated upstream start-session/deliver pass; full repeated-session suite and reconnect/cleanup remain unsupported or unverified |
 | API-01 | Public call timeout/cancellation lifecycle | `src/session.nim:cancel`, `waitForTimeout`; `src/handoff.nim:cancel` | `tests/test_cancellation.nim` | COMPLETE for local observation; no remote execution cancellation |
 | NL-05 | Transport-neutral CapTP behavior | `tests/test_transport_conformance.nim`, `tests/tls_peer.nim` | `nimble transportConformanceTest` | COMPLETE for in-memory/TCP/TLS tested cases; Onion conditional |
-| ID-03 | Explicit expected-peer policy and durable wire key | `src/identity.nim`, `src/session.nim`, `src/api.nim`, `src/server.nim` | `tests/test_identity.nim` | COMPLETE for exact session-key policy |
+| ID-03 | Explicit expected-peer policy and session wire key | `src/identity.nim`, `src/session.nim`, `src/api.nim`, `src/server.nim` | `tests/test_identity.nim` | COMPLETE for exact current-session-key policy; reconnect requires a new pin |
 | ID-04 | Locator/session identity binding | `src/session.nim:setExpectedPeer`, `src/api.nim`, `src/handoff.nim` | `tests/test_identity.nim` | PARTIAL: strict signed-locator/key binding; Onion ownership unproven |
 | NL-03 | Authenticated netlayer evidence | `src/transport.nim:authenticationEvidence`, `src/session.nim`, `src/tls_transport.nim` | `tests/test_identity.nim`, `nimble tlsTest` | PARTIAL: project-specific mutual-TLS provider; no official OCapN profile |
 | NL-04 | Authenticated channel provider | `src/tls_transport.nim` | `nimble tlsTest` | PARTIAL: real two-process project TLS profile; not official OCapN interop |
@@ -41,7 +41,7 @@ and limitation notes follow the table.
 | Canonical Syrup scalars, containers, records | `src/syrup.nim:encoded`, `decoded` | COMPLETE | `tests/test_syrup.nim`; vectors for duplicate dict/set members |
 | Canonical frame encoding and limits | `src/framing.nim` | COMPLETE | `tests/test_session.nim`, `test_transport.nim` |
 | Peer/sturdyref Syrup and URI forms | `src/locators.nim` | PARTIAL | `tests/test_locators.nim`; binary swiss numbers remain legacy-compatible |
-| Per-session Ed25519 hello and Session ID | `src/session.nim`, `src/crypto.nim` | COMPLETE for tested profile | unit tests and Glowcap runner; no durable node identity |
+| Per-session Ed25519 hello and Session ID | `src/session.nim`, `src/crypto.nim` | COMPLETE for default profile | `tests/test_session.nim`, `tests/test_identity.nim`; explicit legacy durable mode is project-specific |
 | Secure channel before CapTP | Netlayer responsibility; absent for TCP | MISSING | TCP is explicitly testing-only |
 | `op:start-session`, crossed hello arbitration | `src/messages.nim`, `src/session.nim` | COMPLETE for tested profile | Glowcap `24/24 × 3`; one abort fixture needs compatibility normalization |
 | `op:deliver`, `deliver-only`, answer/resolver | `src/messages.nim`, `src/session.nim` | COMPLETE for tested profile | session, TCP, and public API suites |
@@ -79,13 +79,14 @@ and limitation notes follow the table.
   versioned durable node identity storage; transport identity remains a
   separate netlayer concern.
 
-## Batch B evidence and limits
+## Identity evidence and limits
 
-Durable identity persistence, stable restart/reconnect wire keys, exact
-expected-peer rejection, and signed acceptable-location matching are covered
-by `tests/test_identity.nim`. This does not make the current TCP or Onion
-transports authenticated, and no normative Tor Service ID-to-CapTP identity
-binding has been implemented.
+Durable identity persistence, per-session wire keys, reconnect key rotation,
+exact expected-session-key rejection, and signed acceptable-location matching
+are covered by `tests/test_identity.nim`. This does not make the current TCP or
+Onion transports authenticated, and no normative Tor Service ID-to-CapTP
+identity binding has been implemented. `simLegacyDurable` is an explicit
+compatibility profile and is not strict CapTP identity semantics.
 
 ## Evidence and limits
 

@@ -232,3 +232,24 @@ No commit was created by this audit. If accepted, use separate commits:
 
 Do not mix a future API freeze or authenticated-netlayer implementation into
 the documentation commits.
+
+## P9/P10 follow-up
+
+The follow-up audit added a deterministic A→B→A capability-forwarding cycle
+to `tests/test_api.nim`; `nim c -r --hints:off tests/test_api.nim` passes and
+the cycle returns the expected result with clean session shutdown. Existing
+distributed-GC, handoff-failure, robustness, and stale-resolver suites also
+pass.
+
+The pinned draft says each side MUST create a per-session Ed25519 key. The
+implementation now follows that requirement: default Node, server-accept, reconnect, and
+handoff paths now generate a fresh session key, while the durable Node seed is
+kept as the persistent Node trust anchor/public identity. The explicit
+`simLegacyDurable` mode remains a project-specific compatibility profile and is
+not strict CapTP semantics.
+
+Exact expected-peer verification now applies to the current session key. A
+reconnect intentionally has a new key, so a stale exact-key pin is rejected;
+there is no automatic fallback to the durable key or legacy mode. The
+project-specific mutual-TLS profile still needs an out-of-band mapping to the
+session key and does not itself prove durable Node identity.

@@ -74,19 +74,55 @@ suite "durable identity and peer verification":
     expect IdentityError:
       discard createIdentity(path)
 
-  test "durable identity is the wire key before and after restart":
+  test "durable identity survives while session keys are ephemeral":
     let path = testPath()
     cleanup(path)
     defer: cleanup(path)
     let first = createIdentity(path)
-    let firstSession = newSession(inMemoryPair().local, first.sessionSeed())
-    check firstSession.localPublicKey == first.publicKey
+    let firstSession = newSession(inMemoryPair().local)
+    check first.publicKey == loadIdentity(path).publicKey
+    check firstSession.localPublicKey != first.publicKey
     firstSession.close("test cleanup")
     let restarted = loadIdentity(path)
-    let secondSession = newSession(inMemoryPair().local, restarted.sessionSeed())
-    check secondSession.localPublicKey == restarted.publicKey
-    check secondSession.localPublicKey == firstSession.localPublicKey
+    let secondSession = newSession(inMemoryPair().local)
+    check restarted.publicKey == first.publicKey
+    check secondSession.localPublicKey != restarted.publicKey
+    check secondSession.localPublicKey != firstSession.localPublicKey
     secondSession.close("test cleanup")
+
+  test "one node creates a new session identity on reconnect":
+    let path = testPath()
+    cleanup(path)
+    defer: cleanup(path)
+    let identity = createIdentity(path)
+    let client = newNode(port = Port(0), identity = identity)
+    let server = newNode(port = Port(0))
+    let first = client.dial("127.0.0.1", server.manager.listenPort())
+    var remaining = 200
+    while first.state != ssOpen and remaining > 0:
+      discard server.poll(1)
+      discard client.poll(1)
+      dec remaining
+    check remaining > 0
+    let firstKey = first.localPublicKey
+    first.close("reconnect")
+    while server.manager.sessionCount > 0:
+      discard server.poll(1)
+    discard client.poll(1)
+    let second = client.dial("127.0.0.1", server.manager.listenPort())
+    remaining = 200
+    while second.state != ssOpen and remaining > 0:
+      discard server.poll(1)
+      discard client.poll(1)
+      dec remaining
+    check remaining > 0
+    check firstKey != second.localPublicKey
+    check firstKey != identity.publicKey
+    check second.localPublicKey != identity.publicKey
+    check client.publicIdentity() == identity.publicKey
+    second.close("reconnect cleanup")
+    client.close()
+    server.close()
 
   test "independent nodes keep independent wire identities":
     let pathA = testPath() & "-a"
@@ -105,7 +141,7 @@ suite "durable identity and peer verification":
     sessionA.close("test cleanup")
     sessionB.close("test cleanup")
 
-  test "incoming sessions use the durable node wire key":
+  test "incoming sessions use a per-session wire key":
     let path = testPath()
     cleanup(path)
     defer: cleanup(path)
@@ -123,12 +159,25 @@ suite "durable identity and peer verification":
       discard client.pump()
       dec remaining
     check remaining > 0
-    check accepted.localPublicKey == identity.publicKey
+    check accepted.localPublicKey != identity.publicKey
+    check accepted.remotePublicKey == client.localPublicKey
     check accepted.state == ssOpen
     client.close("test cleanup")
     while manager.sessionCount > 0:
       discard manager.poll(5)
     manager.close()
+
+  test "legacy durable session identity requires explicit mode":
+    let path = testPath()
+    cleanup(path)
+    defer: cleanup(path)
+    let identity = createIdentity(path)
+    let node = newNode(port = Port(0), identity = identity,
+      sessionIdentityMode = simLegacyDurable)
+    let session = node.dial("127.0.0.1", node.manager.listenPort())
+    check session.localPublicKey == identity.publicKey
+    session.close("legacy mode cleanup")
+    node.close()
 
   test "strict node construction requires durable identity":
     expect IdentityError:

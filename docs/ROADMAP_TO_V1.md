@@ -3,8 +3,9 @@
 ## Batch B status
 
 - B1 durable identity: implemented as versioned, checksummed local storage
-  with explicit replacement and safe file permissions; Node Sessions now sign
-  `op:start-session` with the durable key across restart and reconnect.
+  with explicit replacement and safe file permissions. The durable key is a
+  Node trust anchor/public identity; default Sessions do not reuse it as their
+  CapTP wire key.
 - B2 expected peer policy: implemented for exact CapTP session public keys;
   testing-only mode remains explicit in the model and authenticated-netlayer
   mode fails closed without proof.
@@ -13,8 +14,29 @@
   expected CapTP key. TCP and Onion still do not provide production ownership
   binding between the transport designator and that key.
 
-The next security batch must define and test the authenticated netlayer
-contract before changing the wire identity or marking Onion peers verified.
+### P9/P10 status
+
+The pinned CapTP draft says each side MUST create a per-session cryptography
+key pair and requires that session public key/signature in `op:start-session`.
+The default `simPerSession` profile now creates a fresh key for every outbound,
+accepted, reconnect, and auxiliary handoff Session. `simLegacyDurable` retains
+the old stable wire key only as an explicit project-specific compatibility
+mode; it is never selected after a handshake or verification failure.
+
+Exact peer verification consequently pins the current CapTP session key, not
+the durable Node key. Reconnect creates a new key and must be provisioned with
+a new exact pin. This is fail-closed, but it does not claim a normative binding
+between a durable Node identity and an ephemeral session key.
+
+The documented `nimocapn` facade is the intended stable API. Low-level mutable
+`Node`/`Session`/reference-table fields remain experimental until a deliberate
+pre-v1 breaking freeze can replace them with minimal read-only accessors.
+The deterministic A→B→A forwarding-cycle regression passes; no lifecycle
+defect was found.
+
+The remaining security work is to define any authenticated netlayer trust
+binding that is actually supported by an upstream profile; Onion Service IDs
+remain unbound to CapTP keys.
 
 This roadmap is based on the pinned draft OCapN documents and the audit of
 commit `31012070f3d8291b7177640b186e10060972b245`. It does not change the
