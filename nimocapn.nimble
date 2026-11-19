@@ -19,7 +19,7 @@ task identityTest, "Run durable identity and peer verification tests":
   exec "nim c -r --hints:off tests/test_identity.nim"
 
 task tlsTest, "Run the real two-process mutual-TLS CapTP profile test":
-  exec "python3 tests/test_tls_e2e.py"
+  exec "python3 tests/test_tls_e2e.py && python3 tests/test_tls_node_api.py"
 
 task torTest, "Run the explicit Tor Onion integration test":
   exec "nim c -r --hints:off tests/test_onion_e2e.nim && nim c -r --hints:off tests/test_onion_handoff_e2e.nim"

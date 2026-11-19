@@ -1,6 +1,8 @@
 import std/[net, os, strutils, unittest]
 import ../src/[crypto, identity, locators, references, server, session, syrup, transport]
 import ../src/api except call, fetch, waitFor
+when defined(ssl):
+  import ../src/tls_transport
 
 type EvidenceTransport = ref object of Transport
   inner: Transport
@@ -183,6 +185,17 @@ suite "durable identity and peer verification":
     expect IdentityError:
       discard newNode(port = Port(0),
         verificationPolicy = exactPeerPolicy(crypto.publicKey(repeat("x", 32))))
+
+  when defined(ssl):
+    test "public mutual TLS rejects testing-only policy before connect":
+      let node = newNode(port = Port(0))
+      let config = TlsTransportConfig(certificateFile: "missing",
+        privateKeyFile: "missing", caFile: "missing",
+        expectedPeerCertificateFingerprint: repeat('0', 32),
+        expectedPeerCapTpKey: repeat('0', 32))
+      expect SessionError:
+        discard node.connectMutualTls("127.0.0.1", Port(1), config)
+      node.close()
 
   test "exact expected peer is verified before use":
     let pair = inMemoryPair()
