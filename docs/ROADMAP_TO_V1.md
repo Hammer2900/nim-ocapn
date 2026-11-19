@@ -182,3 +182,71 @@ Packaging metadata, the public entrypoint, isolated consumer build, local
 release checks, release checklist, and reproducible release instructions are prepared. Registry
 publication, the proposed beta tag, Tor E2E, Goblins reconnect/cleanup, and
 broader external `op:listen` interoperability remain explicitly unverified.
+
+### P3-Next status
+
+`nimble advancedInteropTest` adds a bounded independent Glowcap driver for two
+sequential Nim→Glowcap sessions using persistent peer state. The same harness
+reports `UNVERIFIED` for selectable `op:listen` modes and `UNSUPPORTED` for
+pipeline, handoff, and wire-level GC cases when the external peer exposes no
+corresponding driver. Goblins remains `SKIP` without Guile 3.x and its pinned
+`pre-inst-env`.
+
+### P3-Goblins status
+
+The independent Goblins runner now discovers the prepared local Guile/Goblins
+environment when available and drives the unmodified pinned
+`tests/ocapn-test-suite.scm` as a separate process. With Guile 3.0.9 and the
+isolated Python `cryptography`/`stem` environment, Nim bootstrap, sturdyref
+fetch, invocation, and a restarted-process invocation pass; upstream
+start-session, deliver/promise, GC, listen, and handoff cases are also run.
+The local SIGPIPE-safe wrapper now supports repeated Nim sessions. Durable
+identity across process restart remains `UNVERIFIED` because pinned
+`spawn-mycapn` has no persistent identity input. Strict `op:listen` modes,
+Nim-originated promise pipelining, handoff, and observable distributed GC
+remain `UNVERIFIED`; Goblins' legacy listener form and upstream-directed
+scenarios use a different direction/profile. No Goblins source is modified.
+
+### P4 robustness status
+
+The bounded robustness suite covers malformed Syrup, frame-boundary errors,
+fragmented/coalesced and zero-length frames, excessive nesting, deterministic
+mutation inputs, malformed application operations, and duplicate answer-GC
+positions. Syrup recursion is capped before descent and public frame decoder
+limits must be positive. The suite is available as `nimble robustnessTest`
+and `nimble fuzzTest`.
+
+This hardening does not establish complete protocol fuzz coverage, durable
+anti-exhaustion guarantees for every valid operation, or production security
+for raw TCP and Onion transports.
+
+### P5 resource lifecycle status
+
+The resource harness covers 2,000 sequential invocations, 100 repeated
+Session create/close cycles, unresolved-call admission, and post-cleanup
+counter checks. Existing session limits now also bound inbound unresolved
+answer slots, while duplicate inbound answer positions fail closed instead of
+overwriting lifecycle state; queued pipeline requests use the same bound.
+`nimble resourceTest` is the quick workload and `nimble enduranceTest` is the
+extended workload.
+
+The evidence is bounded for the exercised paths, not a proof of bounded memory
+for every valid application workload. Valid long-lived sessions, arbitrary
+forwarding graphs, and transport-specific kernel/resource limits remain
+operational concerns. Redeemed gift replay tombstones also remain retained
+until manager/table cleanup; eviction would require a separately specified
+expiry policy and is intentionally not added here.
+
+### P6 concurrency and replay status
+
+`nimble concurrencyTest` exercises 1,000 simultaneous calls across four
+independent Session pairs with reverse-order fulfillment, rejection, loaded
+disconnect, and isolation checks. The existing event-loop ownership model is
+explicit: Sessions and reference tables are not thread-safe. The testing-only
+in-memory inbox now has a private 1 MiB bound and exposes queued bytes through
+the existing transport statistics.
+
+Gift replay protection remains lifecycle-bounded rather than size-bounded:
+redeemed tombstones are retained until the owning GiftTable is cleared. No
+automatic eviction or TTL was added because the current protocol profile does
+not provide a safe expiry proof.

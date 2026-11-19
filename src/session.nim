@@ -377,6 +377,11 @@ proc exportObject*(session: Session; behavior: Behavior): CapabilityRef =
   session.references.allocateExport(behavior)
 
 proc registerPendingPromise*(session: Session; position: int64; promise: Promise) =
+  if session.pending.hasKey(position):
+    raise newException(SessionError, "duplicate pending promise position")
+  if session.pending.len >= session.limits.maxPendingPromises:
+    session.diagnostic(dekResourceLimit, decResource, "pending promise limit exceeded")
+    raise newException(SessionError, "pending promise limit exceeded")
   session.pending[position] = promise
 
 proc unregisterPendingPromise*(session: Session; position: int64) =
@@ -618,6 +623,17 @@ proc sendFulfillment(session: Session; resolver, value: SyrupValue;
 
 proc notifyListener(session: Session; slot: PromiseSlot; listener: PromiseListener)
 proc accountOutboundExport*(session: Session; reference: CapabilityRef)
+
+proc queuePipelineRequest(session: Session; position: int64;
+                         request: PipelineRequest) =
+  var queued = 0
+  for requests in session.pipelines.values:
+    queued += requests.len
+  if queued >= session.limits.maxPendingPromises:
+    session.diagnostic(dekResourceLimit, decResource,
+      "pipeline request limit exceeded")
+    raise newException(SessionError, "pipeline request limit exceeded")
+  session.pipelines.mgetOrPut(position, @[]).add(request)
 
 proc executePipelineRequest(session: Session; capability: SyrupValue;
                             request: PipelineRequest)
@@ -1684,6 +1700,15 @@ proc processMessage(session: Session; message: SyrupValue) =
       message.fields[2].kind == skInteger and not message.fields[2].negative:
     try:
       let answerPosition = parseInt(message.fields[2].magnitude)
+      if session.answerSlots.hasKey(answerPosition) or
+          session.inboundAnswers.hasKey(answerPosition) or
+          session.resolvedAnswers.hasKey(answerPosition) or
+          session.brokenAnswers.hasKey(answerPosition):
+        raise newException(SessionError, "duplicate inbound answer position")
+      if session.answerSlots.len >= session.limits.maxPendingPromises:
+        session.diagnostic(dekResourceLimit, decResource,
+          "inbound answer limit exceeded")
+        raise newException(SessionError, "inbound answer limit exceeded")
       session.inboundAnswers[answerPosition] = true
       session.answerSlots[answerPosition] = PromiseSlot(pending: true)
     except ValueError:
@@ -1830,7 +1855,7 @@ proc processMessage(session: Session; message: SyrupValue) =
       raise newException(SessionError,
         "unknown or released answer " & $target.position)
     else:
-      session.pipelines.mgetOrPut(target.position, @[]).add(request)
+      session.queuePipelineRequest(target.position, request)
     return
   if target.kind == rkImportPromise and message.label.data == "op:deliver" and
       message.fields.len >= 4 and message.fields[3].kind != skBool:
@@ -1850,7 +1875,7 @@ proc processMessage(session: Session; message: SyrupValue) =
       resolver: message.fields[3])
     let slot = session.promiseSlots[target.position]
     if slot.pending:
-      session.pipelines.mgetOrPut(target.position, @[]).add(request)
+      session.queuePipelineRequest(target.position, request)
     elif slot.broken:
       let reason = if slot.reason.kind == skString: slot.reason.data
                    else: "promise broken"

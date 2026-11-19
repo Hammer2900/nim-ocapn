@@ -1,4 +1,4 @@
-import std/unittest
+import std/[strutils, unittest]
 import ../src/transport
 
 type
@@ -48,6 +48,16 @@ proc flush(transport: MockTransport) =
     transport.writeChunk(payload, front = true)
 
 suite "controlled transport backpressure":
+  test "bounds the testing-only in-memory inbox":
+    let pair = inMemoryPair()
+    let payload = "x".repeat(1024 * 1024)
+    pair.local.send(payload)
+    check pair.local.queuedBytes() == payload.len
+    expect TransportError:
+      pair.local.send("x")
+    discard pair.remote.receive()
+    check pair.local.queuedBytes() == 0
+
   test "bounds a would-block queue and drains partial writes":
     let transport = MockTransport(blocked: true, maxQueueBytes: 8,
       maxWriteBytes: 2, queued: @[])

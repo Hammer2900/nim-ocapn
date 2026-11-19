@@ -9,6 +9,8 @@ type
 proc frame*(body: string): string = $body.len & ":" & body
 
 proc newFrameDecoder*(maxFrameBytes = 1024 * 1024): FrameDecoder =
+  if maxFrameBytes <= 0:
+    raise newException(FramingError, "frame size limit must be positive")
   FrameDecoder(maxFrameBytes: maxFrameBytes)
 
 proc feed*(decoder: var FrameDecoder; chunk: string): seq[string] =

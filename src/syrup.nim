@@ -146,6 +146,9 @@ proc encoded*(value: SyrupValue): string =
 type Decoder = object
   input: string
   position: int
+  depth: int
+
+const maxDecodeDepth = 256
 
 proc fail(decoder: Decoder; message: string): ref SyrupError =
   newException(SyrupError, message & " at byte " & $decoder.position)
@@ -209,6 +212,10 @@ proc readContainer(decoder: var Decoder; closing: char): seq[SyrupValue] =
     result.add(decoder.readValue())
 
 proc readValue(decoder: var Decoder): SyrupValue =
+  if decoder.depth >= maxDecodeDepth:
+    raise decoder.fail("maximum Syrup nesting depth exceeded")
+  inc decoder.depth
+  defer: dec decoder.depth
   decoder.skipWhitespace()
   if decoder.position >= decoder.input.len:
     raise decoder.fail("unexpected end of input")

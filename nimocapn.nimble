@@ -42,11 +42,29 @@ task interopTest, "Run two-way interoperability against an unmodified Glowcap pe
 task independentInteropTest, "Run the upstream OCapN suite against unmodified Goblins":
   exec "python3 tests/test_goblins_interop.py"
 
+task advancedInteropTest, "Run bounded advanced scenarios against independent peers":
+  exec "python3 tests/test_advanced_interop.py"
+
 task transportConformanceTest, "Run transport-neutral CapTP scenarios":
   exec "nim c -r --hints:off tests/test_transport_conformance.nim && python3 tests/test_tls_e2e.py && if [ -n \"$NIM_OCAPN_ONION_SERVICE\" ]; then nim c -r --hints:off tests/test_onion_e2e.nim; else echo 'Onion transport: SKIP (NIM_OCAPN_ONION_SERVICE is not set)'; fi"
 
 task complianceTest, "Run local strict Syrup and Locator compliance vectors":
   exec "nim c -r --hints:off tests/test_syrup.nim && nim c -r --hints:off tests/test_locators.nim"
+
+task robustnessTest, "Run adversarial protocol and framing tests":
+  exec "nim c -r --hints:off tests/test_robustness.nim"
+
+task fuzzTest, "Run deterministic bounded Syrup mutation fuzzing":
+  exec "nim c -r --hints:off tests/test_robustness.nim"
+
+task resourceTest, "Run bounded resource and lifecycle tests":
+  exec "nim c -r --hints:off tests/test_resource_lifecycle.nim"
+
+task enduranceTest, "Run the extended resource lifecycle workload":
+  exec "nim c -r -d:endurance --hints:off tests/test_resource_lifecycle.nim"
+
+task concurrencyTest, "Run bounded concurrent protocol workload tests":
+  exec "nim c -r --hints:off tests/test_concurrency.nim"
 
 task publicApiTest, "Run the public identity and netlayer API tests":
   exec "nim c -r --hints:off tests/test_public_api.nim"

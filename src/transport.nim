@@ -20,6 +20,7 @@ type
     closed: bool
 
 const externalAuthenticatedChannel* = "external-authenticated-channel"
+const maxInMemoryInboxBytes = 1024 * 1024
 
 proc inMemoryPair*(): tuple[local, remote: InMemoryTransport] =
   let a = InMemoryTransport()
@@ -60,6 +61,11 @@ method authenticationEvidence*(transport: Transport): TransportAuthEvidence {.ba
 method send*(transport: InMemoryTransport; payload: string) =
   if transport.closed or transport.peer.isNil or transport.peer.closed:
     raise newException(TransportError, "in-memory transport is closed")
+  var queued = 0
+  for item in transport.peer.inbox:
+    queued += item.len
+  if queued + payload.len > maxInMemoryInboxBytes:
+    raise newException(TransportError, "in-memory inbox limit exceeded")
   transport.peer.inbox.add(payload)
 
 method receive*(transport: InMemoryTransport): string =
@@ -74,6 +80,11 @@ method isClosed*(transport: InMemoryTransport): bool =
 
 method close*(transport: InMemoryTransport) =
   transport.closed = true
+
+method queuedBytes*(transport: InMemoryTransport): int =
+  if transport.peer.isNil: return 0
+  for payload in transport.peer.inbox:
+    result += payload.len
 
 proc connectTcp*(host: string; port: Port; maxOutputBytes = 1024 * 1024): TcpTransport =
   result = TcpTransport(socket: newSocket(buffered = false),

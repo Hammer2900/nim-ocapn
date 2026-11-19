@@ -1,8 +1,8 @@
 import std/[net, os, strutils]
 import ../src/[references, session, syrup, transport]
 
-if paramCount() != 2:
-  quit("usage: goblins_client HOST PORT")
+if paramCount() < 2 or paramCount() > 3:
+  quit("usage: goblins_client HOST PORT [legacy-listen]")
 
 let host = paramStr(1)
 let port = Port(parseInt(paramStr(2)))
@@ -14,4 +14,6 @@ while capSession.state != ssOpen:
 let echoObject = capSession.waitFor(capSession.fetch("IO58l1laTyhcrgDKbEzFOO32MDd6zE5w")).descriptor()
 let result = capSession.waitFor(capSession.deliverCall(echoObject, [text("nim-to-goblins")]))
 echo result.encoded()
+
+capSession.close("Goblins interop client cleanup")
 socket.close()
