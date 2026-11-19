@@ -13,6 +13,12 @@ The P9 local cycle regression (`tests/test_api.nim`, A→B→A capability
 forwarding) is protocol-lifecycle evidence only; it is not an independent-peer
 interoperability result.
 
+The local Onion result is recorded separately from independent-peer results:
+`nimble onionE2eTest` starts an isolated Tor v3 daemon and runs the Nim Onion
+adapter against its temporary service. It is real Tor routing evidence, not
+evidence of independent OCapN implementation interoperability or Onion
+identity authentication.
+
 ## Peer baseline
 
 | Peer | Revision | Runtime/profile | Transport |
@@ -67,6 +73,7 @@ source was changed. The reproducible runner is `nimble interopTest`.
 | Cross-peer handoff | Nim ↔ Guile Goblins | CapTP v1 | UNVERIFIED | Handoff is exercised upstream → Goblins; no public Goblins fixture API exposes a Nim-originated handoff scenario |
 | Distributed GC | Nim ↔ Guile Goblins | CapTP v1 | UNVERIFIED | Wire GC is covered upstream → Goblins; object lifetime is not observable from the Nim-facing fixture |
 | Invalid sturdyref/disconnect cleanup | Nim ↔ Guile Goblins | Goblins OCapN test-suite | UNSUPPORTED | Upstream suite does not provide this exact bounded scenario |
+| Real Tor v3 routing and CapTP lifecycle | Nim ↔ Nim | isolated Tor daemon, `onion` testing profile | PASS | `nimble onionE2eTest`: sequential sessions, concurrent clients, pipelined calls, unavailable-service rejection, and cleanup |
 
 The previous recursive delivery-release defect is fixed in `src/session.nim`:
 resolver fulfillment values are retained by the promise and are not immediately

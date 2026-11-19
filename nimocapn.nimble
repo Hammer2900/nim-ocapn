@@ -24,6 +24,9 @@ task tlsTest, "Run the real two-process mutual-TLS CapTP profile test":
 task torTest, "Run the explicit Tor Onion integration test":
   exec "nim c -r --hints:off tests/test_onion_e2e.nim && nim c -r --hints:off tests/test_onion_handoff_e2e.nim"
 
+task onionE2eTest, "Run an isolated real Tor v3 Onion E2E test":
+  exec "python3 tests/test_onion_real_e2e.py"
+
 task stressTest, "Run bounded lifecycle and handoff stress tests":
   exec "nim c -r --hints:off tests/test_handoff_stress.nim"
 

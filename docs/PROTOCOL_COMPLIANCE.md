@@ -54,7 +54,7 @@ and limitation notes follow the table.
 | Bootstrap and sturdyref enlivening | `api.nim`, `handoff.nim` | PARTIAL | TCP/Glowcap paths work; no authenticated production locator binding |
 | OCapN peer locator semantics | `locators.nim` | PARTIAL | strict edge vectors pass; no runtime selector separates strict from legacy binary swiss parsing |
 | TCP netlayer | `transport.nim`, `server.nim` | TESTING ONLY | reliable ordered transport; no channel security |
-| Tor Onion adapter | `onion.nim` | PARTIAL | real Nim↔Nim pipeline/handoff on Fedora; `authenticated=false` by design |
+| Tor Onion adapter | `onion.nim` | PARTIAL | isolated real Tor v3 handshake/bootstrap/pipelining/reconnect/concurrency/failure test via `nimble onionE2eTest`; `authenticated=false` by design |
 | Cross-implementation interoperability | Glowcap testing profile | PARTIAL | `nimble interopTest`: two-way bootstrap/invocation PASS; advanced operations are unsupported or unverified |
 
 ## Module inventory

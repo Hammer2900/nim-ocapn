@@ -300,3 +300,15 @@ The P13 inbound TLS listener uses `NodeConfig.tlsServerConfig` and the same
 Session registry as the TCP listener. Exact expected session-key pinning and
 explicit certificate-backed unpinned ephemeral-key mode are supported; no
 durable identity binding is inferred.
+
+### Tor-1 status
+
+`nimble onionE2eTest` provides the first reproducible real-Tor v3 path in this
+checkout. It starts an isolated Tor daemon and temporary Onion Service, then
+verifies SOCKS5 routing, CapTP handshake, bootstrap/pipelining, two repeated
+sessions, concurrent clients, unavailable-service rejection, and cleanup.
+Onion remains testing-only: the pinned baseline defines the Service ID as the
+locator designator but does not define a cryptographic binding from that ID to
+the ephemeral CapTP session key. The next production Onion task is therefore
+to select and verify a normative or explicitly trusted out-of-band binding;
+until then `OnionTransport.authenticated` must remain false.

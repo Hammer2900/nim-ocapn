@@ -44,6 +44,15 @@ has an Onion branch, while the general inbound `Node` manager is still TCP
 specific; Onion listeners are currently driven explicitly by integration
 harnesses.
 
+`nimble onionE2eTest` now provisions an isolated Tor 0.4.x daemon, a v3
+`HiddenServiceDir`, and a temporary SOCKS listener. The real test exercises
+two sequential sessions, two concurrent clients, CapTP handshake, bootstrap
+fetch, pipelined invocation, disconnect/cleanup, and a failed connection to a
+different valid-looking Service ID. The test owns the daemon and temporary
+keys; it does not use or reconfigure the system Tor process. This proves
+routing and protocol operation only, not Onion Service ID ownership of a CapTP
+key.
+
 ## Requirements comparison
 
 | Requirement | Current state | Status |
@@ -52,7 +61,7 @@ harnesses.
 | Partial reads/writes and EAGAIN | `TcpTransport` output queue and frame decoder | COMPLETE for tested paths |
 | Bounded outbound memory | `maxOutputBytes` and `SessionLimits` | COMPLETE for current limits |
 | Fair multi-session polling | selector + bounded manager/session work | COMPLETE for tested TCP manager |
-| Connect/listen/accept/close | TCP manager and explicit Onion listener | PARTIAL unified API |
+| Connect/listen/accept/close | TCP manager and explicit Onion listener | PARTIAL unified API; real Tor path tested |
 | Authenticated peer identity | Explicit evidence seam; no production provider | PARTIAL |
 | Locator provenance | stored on sessions/transports | PARTIAL; no cryptographic binding |
 | Production secure channel | none | MISSING |
@@ -61,8 +70,9 @@ harnesses.
 The local Netlayers draft requires bidirectional ordered delivery and that only
 participants can insert messages. It names Tor Onion as a netlayer with
 designator = Service ID, transport = `onion`, no hints, and service port 9045.
-The current Onion adapter satisfies routing and framing tests, but a SOCKS5
-connection alone does not establish the required application identity policy.
+The current Onion adapter satisfies routing, framing, reconnect, concurrency,
+and failure tests, but a SOCKS5 connection alone does not establish the
+required application identity policy.
 
 ## Minimal next interface
 

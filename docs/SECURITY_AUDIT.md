@@ -55,6 +55,9 @@
 - Protocol/framing failures close only the affected session; pending promises
   are broken and session-local tables are cleared.
 - Onion SOCKS5 success is deliberately not reported as CapTP authentication.
+  The isolated real-Tor runner (`nimble onionE2eTest`) proves v3 routing,
+  handshake, pipelining, reconnect, concurrent clients, failure handling, and
+  cleanup, but does not change this security boundary.
 - Redeemed gift IDs are retained as session/table-local tombstones; repeated
   receive or deposit cannot issue the capability twice.
 - Deterministic fault-injection tests cover cancellation, delayed delivery,

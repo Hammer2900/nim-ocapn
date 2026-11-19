@@ -23,6 +23,8 @@ proc runOnionE2E(service: string) =
   var config = defaultOnionNetlayerConfig()
   if getEnv("NIM_OCAPN_TOR_SOCKS").len > 0:
     config.socksHost = getEnv("NIM_OCAPN_TOR_SOCKS")
+  if getEnv("NIM_OCAPN_TOR_SOCKS_PORT").len > 0:
+    config.socksPort = Port(parseInt(getEnv("NIM_OCAPN_TOR_SOCKS_PORT")))
   let layer = newOnionNetlayer(config)
   let peer = newPeerLocator("onion", service)
   let listener = layer.listen(advertised = peer)
