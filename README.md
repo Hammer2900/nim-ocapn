@@ -58,11 +58,20 @@ VM, persistence layer, or Goblins port.
 
 ## Quick start
 
-The package is currently installed from a Git tag or a local checkout. After
-the release tag is created, use:
+The package is currently installed from a fixed Git commit or a tagged local
+checkout. Nimble 0.26.2 rejects the hyphenated `v1.0.0-rc.1` tag when it is
+passed as an `@version` selector. The verified commit installation is:
 
 ```sh
-nimble install 'git+https://github.com/Hammer2900/nim-ocapn.git@v1.0.0-rc.1'
+nimble install 'https://github.com/Hammer2900/nim-ocapn.git@1b5d1ec1f0d107a792f0743e09b2963ac2fa4159'
+```
+
+To install exactly from the release tag with Nimble 0.26.2, clone the tag and
+install the resulting checkout:
+
+```sh
+git clone --branch v1.0.0-rc.1 https://github.com/Hammer2900/nim-ocapn.git
+nimble install file:///absolute/path/to/nim-ocapn
 ```
 
 The following uses the public `nimocapn` facade and the public `syrup` value

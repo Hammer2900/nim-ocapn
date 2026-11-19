@@ -34,11 +34,13 @@ without publishing or creating a tag.
    For a fixed Git commit after a remote is configured:
 
    ```sh
-   nimble install 'git+https://example.invalid/nim-ocapn.git@<commit>'
+   nimble install 'https://example.invalid/nim-ocapn.git@<commit>'
    ```
 
-   The Git URL is a procedure template, not a command to run against an
-   unconfigured remote.
+   Nimble 0.26.2 does not accept the hyphenated RC tag as an `@version`
+   selector. To install exactly from the tag, clone it and use
+   `nimble install file:///absolute/path/to/nim-ocapn` instead. The Git URL is
+   a procedure template, not a command to run against an unconfigured remote.
 6. Review `docs/BETA_RELEASE_CHECKLIST.md`, package exclusions, license, and
    `git status`. Ensure no identity files, certificates, logs, binaries or
    secrets are tracked.
