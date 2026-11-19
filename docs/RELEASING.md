@@ -42,6 +42,6 @@ without publishing or creating a tag.
 6. Review `docs/BETA_RELEASE_CHECKLIST.md`, package exclusions, license, and
    `git status`. Ensure no identity files, certificates, logs, binaries or
    secrets are tracked.
-7. Change Nimble metadata to `0.3.0beta1` (Nimble 0.26-compatible spelling),
-   commit the change, and create the Git tag `v0.3.0-beta.1`. This task does
+7. Change Nimble metadata to `1.0.0rc1` (Nimble 0.26-compatible spelling),
+   commit the change, and create the Git tag `v1.0.0-rc.1`. This task does
    not create or push it.

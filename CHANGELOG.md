@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.3.0-beta.1
+## 1.0.0-rc.1
 
-Release candidate prepared for local beta verification.
+Scoped protocol-library release candidate prepared for local verification.
 
 - Public `nimocapn` package entrypoint with durable identity, Node configuration,
   bootstrap, invocation, typed capability arguments, diagnostics, limits and
@@ -13,11 +13,15 @@ Release candidate prepared for local beta verification.
   test.
 - Local Syrup/Locator, lifecycle, handoff, cancellation, diagnostics, stress,
   TLS, deployment and transport regression suites pass.
-- Glowcap conformance passes 24/24 in three consecutive runs.
+- Basic Nim↔Glowcap interoperability is verified. The separate Glowcap
+  24/24 × 3 conformance runner was not available in this checkout and remains
+  UNVERIFIED for this candidate.
 
 Known limitations: the OCapN/Syrup revisions are pinned draft specifications;
 cross-peer `op:listen` modes 1/2/3 remain partial, Goblins reconnect/cleanup
 coverage is incomplete, and Tor E2E requires externally configured services.
+The project-specific mutual-TLS profile is not an official OCapN netlayer, and
+raw TCP/Onion remain testing-only profiles.
 
 ## 0.2.0-alpha
 

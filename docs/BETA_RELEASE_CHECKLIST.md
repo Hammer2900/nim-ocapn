@@ -33,8 +33,9 @@
 
 ## OPTIONAL
 
-- [x] Glowcap conformance 24/24 × 3.
+- [ ] Glowcap conformance 24/24 × 3 (UNVERIFIED: runner unavailable locally).
 - [x] Mutual-TLS E2E with the project-specific profile when OpenSSL is available.
 
-The candidate version is `v0.3.0-beta.1`; Nimble metadata uses `0.3.0beta1`.
+This beta checklist is superseded by `docs/RELEASE_CANDIDATE_CHECKLIST.md`.
+The RC candidate is `v1.0.0-rc.1`; Nimble metadata uses `1.0.0rc1`.
 This checklist does not create a tag or publish a package.

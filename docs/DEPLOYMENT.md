@@ -2,8 +2,8 @@
 
 ## Required dependencies
 
-`nim-ocapn` beta candidate `v0.3.0-beta.1` (Nimble metadata uses the compatible
-`0.3.0beta1` spelling) has no Nimble runtime dependencies. Building an application
+`nim-ocapn` release candidate `v1.0.0-rc.1` (Nimble metadata uses the compatible
+`1.0.0rc1` spelling) has no Nimble runtime dependencies. Building an application
 requires Nim 2.x, Nimble, a C compiler and the platform socket libraries. A
 compiled application does not require Nim or Python at runtime.
 

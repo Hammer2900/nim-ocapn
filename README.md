@@ -4,7 +4,7 @@
 > protocol.
 
 [![Nim 2.x](https://img.shields.io/badge/Nim-2.x-FFE953?logo=nim)](https://nim-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.3.0beta1-5B8CFF)](./nimocapn.nimble)
+[![Version](https://img.shields.io/badge/version-1.0.0rc1-5B8CFF)](./nimocapn.nimble)
 [![Status](https://img.shields.io/badge/status-beta-orange)](./CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./nimocapn.nimble)
 
@@ -41,7 +41,7 @@ VM, persistence layer, or Goblins port.
 | Property | Current profile |
 | --- | --- |
 | Language | Nim 2.x |
-| Package version | `0.3.0beta1` (`v0.3.0-beta.1` candidate) |
+| Package version | `1.0.0rc1` (`v1.0.0-rc.1` candidate) |
 | Protocol baseline | Pinned OCapN and Syrup draft revisions; see [baseline](#protocol-specification--versioning) |
 | Serialization | Syrup with canonical framing and strict test vectors |
 | Transports | TCP testing-only, Tor Onion testing-only, project-specific mutual TLS |
@@ -58,10 +58,11 @@ VM, persistence layer, or Goblins port.
 
 ## Quick start
 
-The package is currently installed from Git or a local checkout:
+The package is currently installed from a Git tag or a local checkout. After
+the release tag is created, use:
 
 ```sh
-nimble install 'git+https://github.com/Hammer2900/nim-ocapn.git@4464f2fedf0f081898bf0d9f6ce39568bcd543cd'
+nimble install 'git+https://github.com/Hammer2900/nim-ocapn.git@v1.0.0-rc.1'
 ```
 
 The following uses the public `nimocapn` facade and the public `syrup` value
@@ -163,7 +164,7 @@ pins the exact upstream revisions used for its compatibility profile:
 | [OCapN](https://github.com/ocapn/ocapn) | `ebf68742a40a89fff4730886a8788c5fe1bc9b96` | CapTP, Locators, Netlayers, Model, and Notation drafts |
 | [Syrup](https://github.com/ocapn/syrup) | `931fa528b8ddda976febba577fb09ee0726845d4` | Canonical data encoding and framing dependency |
 
-`0.3.0beta1` is the version of this Nim library. It is not an OCapN
+`1.0.0rc1` is the version of this Nim library. It is not an OCapN
 specification version, and this project does not claim an official stable
 “OCapN v1.0” protocol release. A newer upstream commit is not adopted
 automatically: changing the baseline requires review, updated vectors,
@@ -275,8 +276,10 @@ needed for their optional tests or transport profiles.
 
 ## Project status & known limitations
 
-`nim-ocapn` is a beta candidate, not a declaration of complete OCapN
-compliance. The local release gate and Glowcap conformance suite pass, while
+`nim-ocapn` is a release candidate, not a declaration of complete OCapN
+compliance. The local release gate passes. Basic Glowcap interoperability is
+verified, but the separate 24/24 × 3 conformance runner is unavailable in
+this checkout and remains UNVERIFIED, while
 some cross-peer and transport scenarios remain partial or environment
 dependent:
 
