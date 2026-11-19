@@ -1,8 +1,28 @@
-import std/[net, sequtils, strutils, tables]
-import ./[handoff, locators, messages, onion, promises, references, server, session, syrup, transport]
+import std/[monotimes, net, sequtils, strutils, tables]
+import ./[handoff, identity, locators, messages, onion, promises, references, server, session, syrup, transport]
 import ./session as sessionApi
+when defined(ssl):
+  import ./tls_transport
 
 type
+  NetlayerKind* = enum
+    nlkTcpTestingOnly
+    nlkOnionTestingOnly
+    nlkMutualTls
+  NodeConfig* = object
+    host*: string
+    port*: Port
+    seedPrefix*: string
+    identity*: NodeIdentity
+    identityPath*: string
+    verificationPolicy*: PeerVerificationPolicy
+    netlayer*: NetlayerKind
+    sessionLimits*: SessionLimits
+    handoffLimits*: HandoffLimits
+    onionConfig*: OnionNetlayerConfig
+    maxActiveSessions*: int
+    handshakeTimeoutMs*: int
+    diagnosticSink*: DiagnosticSink
   NodeStats* = object
     activeSessions*: int
     pendingPromises*: int
@@ -76,6 +96,8 @@ type
   Node* = ref object
     manager*: TcpSessionManager
     handoffs*: HandoffManager
+    identity*: NodeIdentity
+    verificationPolicy*: PeerVerificationPolicy
     publications: Table[string, Behavior]
     typedPublications: Table[string, TypedBehavior]
     handoffEnliveners: seq[string]
@@ -86,6 +108,23 @@ type
     host: string
     port: Port
     seedPrefix: string
+    onionConfig: OnionNetlayerConfig
+    diagnosticSink: DiagnosticSink
+
+export identity, locators
+export DiagnosticEvent, DiagnosticSink, DiagnosticEventKind, DiagnosticErrorCategory
+export SessionLimits, SessionStats, SessionError, PromiseTimeoutError
+export HandoffLimits
+
+proc defaultNodeConfig*(port: Port = Port(0)): NodeConfig =
+  NodeConfig(host: "127.0.0.1", port: port, seedPrefix: "nim-node",
+    verificationPolicy: testingOnlyPeerPolicy, netlayer: nlkTcpTestingOnly,
+    sessionLimits: defaultSessionLimits(), handoffLimits: HandoffLimits(maxPending: 256),
+    onionConfig: defaultOnionNetlayerConfig(), maxActiveSessions: 256,
+    handshakeTimeoutMs: 30000)
+
+proc loadNodeIdentity*(path: string): NodeIdentity =
+  loadOrCreateIdentity(path)
 
 proc invokeTyped(node: Node; session: Session; handler: TypedBehavior;
                  raw: seq[SyrupValue]): SyrupValue
@@ -101,11 +140,22 @@ proc installTyped(node: Node; session: Session; name: string;
 
 proc newNode*(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
               limits = defaultSessionLimits();
-              handoffLimits = HandoffLimits(maxPending: 256)): Node =
+              handoffLimits = HandoffLimits(maxPending: 256);
+              identity: NodeIdentity = nil;
+              verificationPolicy = testingOnlyPeerPolicy;
+              maxActiveSessions = 256;
+              handshakeTimeoutMs = 30000;
+              diagnosticSink: DiagnosticSink = nil): Node =
   new(result)
   result.host = host
   result.port = port
   result.seedPrefix = seedPrefix
+  result.onionConfig = defaultOnionNetlayerConfig()
+  result.diagnosticSink = diagnosticSink
+  result.identity = identity
+  result.verificationPolicy = verificationPolicy
+  if verificationPolicy.mode != pvmTestingOnly and identity.isNil:
+    raise newException(IdentityError, "strict peer policy requires durable node identity")
   result.publications = initTable[string, Behavior]()
   result.typedPublications = initTable[string, TypedBehavior]()
   result.handoffEnliveners = @[]
@@ -113,7 +163,8 @@ proc newNode*(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
   result.outboundCursor = 0
   result.sessionLimits = limits
   result.sturdyCache = initTable[string, RemoteCapability]()
-  result.handoffs = newHandoffManager(handoffLimits, limits)
+  result.handoffs = newHandoffManager(handoffLimits, limits, verificationPolicy, identity)
+  result.handoffs.setDiagnosticSink(seedPrefix, diagnosticSink)
   let node = result
   result.manager = newTcpSessionManager(host, port, seedPrefix, host & ":" & $port,
     proc(session: Session) =
@@ -129,10 +180,34 @@ proc newNode*(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
           let answer = actor.deferAnswer()
           discard node.handoffs.startSturdyRefSession(args[0].sturdyRef(), actor, answer)
           list()),
-    limits = limits)
+    limits = limits, verificationPolicy = verificationPolicy, identity = identity,
+    handshakeTimeoutMs = handshakeTimeoutMs,
+    maxActiveSessions = maxActiveSessions)
+  result.manager.setDiagnosticSink(seedPrefix, diagnosticSink)
+
+proc newNode*(config: NodeConfig): Node =
+  if config.netlayer != nlkTcpTestingOnly:
+    raise newException(SessionError,
+      "Node listeners use TCP; select Onion or mutual TLS when connecting with connectUsing")
+  var identity = config.identity
+  if identity.isNil and config.identityPath.len > 0:
+    identity = loadNodeIdentity(config.identityPath)
+  result = newNode(config.host, config.port, config.seedPrefix, config.sessionLimits,
+    config.handoffLimits, identity, config.verificationPolicy,
+    config.maxActiveSessions, config.handshakeTimeoutMs, config.diagnosticSink)
+  result.onionConfig = config.onionConfig
 
 proc setTraceSink*(node: Node; nodeId: string; sink: TraceSink) =
   node.manager.setTraceSink(nodeId, sink)
+
+proc setDiagnosticSink*(node: Node; nodeId: string; sink: DiagnosticSink) =
+  node.diagnosticSink = sink
+  node.manager.setDiagnosticSink(nodeId, sink)
+
+proc publicIdentity*(node: Node): string =
+  if node.isNil or node.identity.isNil:
+    raise newException(IdentityError, "node has no durable identity")
+  node.identity.publicKey
 
 proc publish*(node: Node; name: string; behavior: Behavior) =
   node.publications[name] = behavior
@@ -492,57 +567,144 @@ proc stats*(node: Node): NodeStats =
 proc dial*(node: Node; host: string; port: Port;
            seed = "cccccccccccccccccccccccccccccccc"): Session
 
+proc registerOutbound(node: Node; session: Session; peer: PeerLocator;
+                      policy: PeerVerificationPolicy): Session =
+  result = session
+  session.forwardedRegistry = node.manager.forwardedRegistry
+  session.setTraceSink(node.manager.traceNodeId, node.manager.traceSink)
+  session.setDiagnosticSink(node.manager.diagnosticNodeId, node.manager.diagnosticSink)
+  session.remotePeer = peer
+  session.verificationPolicy = policy
+  session.setExpectedPeer(peer, policy.mode != pvmTestingOnly)
+  node.outbound.add(session)
+
+proc waitForHandshake(session: Session; maxPumps: int): Session =
+  var remaining = maxPumps
+  while session.state == ssNegotiating:
+    if remaining <= 0:
+      session.close("handshake timeout")
+      raise newException(SessionError, "handshake timeout")
+    discard session.pump()
+    dec remaining
+  session
+
+proc sessionSeed(node: Node; fallback: string): string =
+  if node.identity.isNil: fallback else: node.identity.sessionSeed()
+
 proc connect*(node: Node; host: string; port: Port; seed = "cccccccccccccccccccccccccccccccc";
               maxPumps = 10000): Session =
-  result = node.dial(host, port, seed)
-  var remaining = maxPumps
-  while result.state == ssNegotiating:
-    if remaining <= 0:
-      result.close("handshake timeout")
-      raise newException(SessionError, "handshake timeout")
-    discard result.pump()
-    dec remaining
+  result = waitForHandshake(node.dial(host, port, seed), maxPumps)
 
 proc dial*(node: Node; host: string; port: Port;
            seed = "cccccccccccccccccccccccccccccccc"): Session =
   let tcp = connectTcp(host, port)
   tcp.setNonBlocking()
-  result = newGlowcapSession(tcp, seed, host & ":" & $port, node.sessionLimits)
-  result.forwardedRegistry = node.manager.forwardedRegistry
-  result.setTraceSink(node.manager.traceNodeId, node.manager.traceSink)
-  result.remotePeer = newPeerLocator("tcp", host & ":" & $port,
+  let actualSeed = node.sessionSeed(seed)
+  let peer = newPeerLocator("tcp", host & ":" & $port,
     [("host", host), ("port", $port)])
-  node.outbound.add(result)
+  result = newGlowcapSession(tcp, actualSeed, host & ":" & $port, node.sessionLimits,
+    node.verificationPolicy)
+  result = node.registerOutbound(result, peer, node.verificationPolicy)
 
 proc connect*(node: Node; peer: PeerLocator;
               seed = "cccccccccccccccccccccccccccccccc";
               maxPumps = 10000): Session =
   if peer.transport == "onion":
     let onionTransport = newOnionNetlayer().dial(peer)
-    result = newSession(onionTransport, seed, peer.peerUri(), node.sessionLimits)
-    result.forwardedRegistry = node.manager.forwardedRegistry
-    result.setTraceSink(node.manager.traceNodeId, node.manager.traceSink)
-    result.remotePeer = peer
-    node.outbound.add(result)
-    var remaining = maxPumps
-    while result.state == ssNegotiating:
-      if remaining <= 0:
-        result.close("handshake timeout")
-        raise newException(SessionError, "handshake timeout")
-      discard result.pump()
-      dec remaining
-    return
+    let actualSeed = node.sessionSeed(seed)
+    result = newSession(onionTransport, actualSeed, peer.peerUri(), node.sessionLimits,
+      node.verificationPolicy)
+    return waitForHandshake(node.registerOutbound(result, peer, node.verificationPolicy), maxPumps)
   if not peer.hints.hasKey("host") or not peer.hints.hasKey("port"):
     raise newException(SessionError, "TCP peer locator requires host and port hints")
   let host = peer.hints["host"]
   let port = Port(parseInt(peer.hints["port"]))
   node.connect(host, port, seed, maxPumps)
 
+proc connectUsing*(node: Node; peer: PeerLocator; netlayer: NetlayerKind;
+                   seed = "cccccccccccccccccccccccccccccccc";
+                   maxPumps = 10000): Session =
+  case netlayer
+  of nlkTcpTestingOnly:
+    if peer.transport != "tcp":
+      raise newException(SessionError, "TCP selection requires a tcp peer locator")
+    node.connect(peer, seed, maxPumps)
+  of nlkOnionTestingOnly:
+    if peer.transport != "onion":
+      raise newException(SessionError, "Onion selection requires an onion peer locator")
+    let onionTransport = newOnionNetlayer(node.onionConfig).dial(peer)
+    let actualSeed = node.sessionSeed(seed)
+    let session = newSession(onionTransport, actualSeed, peer.peerUri(),
+      node.sessionLimits, node.verificationPolicy)
+    waitForHandshake(node.registerOutbound(session, peer, node.verificationPolicy), maxPumps)
+  of nlkMutualTls:
+    raise newException(SessionError,
+      "mutual TLS requires connectMutualTls with its certificate configuration")
+
+when defined(ssl):
+  proc connectMutualTls*(node: Node; host: string; port: Port;
+                         config: TlsTransportConfig;
+                         maxPumps = 10000): Session =
+    let transport = newTlsClient(host, port, config)
+    let peer = newPeerLocator("tls-testing-only", host & ":" & $port,
+      [("host", host), ("port", $port)])
+    let session = newSession(transport, node.sessionSeed(node.seedPrefix), peer.peerUri(),
+      node.sessionLimits, node.verificationPolicy)
+    result = waitForHandshake(node.registerOutbound(session, peer,
+      node.verificationPolicy), maxPumps)
+
+proc listenPort*(node: Node): Port =
+  node.manager.listenPort()
+
+proc locator*(node: Node): PeerLocator =
+  newPeerLocator("tcp", node.host & ":" & $node.listenPort(),
+    [("host", node.host), ("port", $node.listenPort())])
+
+proc bootstrap*(node: Node; session: Session; name: string;
+                maxPumps = 10000): RemoteCapability =
+  discard node
+  result.session = session
+  result.reference = sessionApi.waitFor(session, sessionApi.fetch(session, name), maxPumps).descriptor()
+
+proc connectVerified*(node: Node; host: string; port: Port; expectedPublicKey: string;
+                      seed = "cccccccccccccccccccccccccccccccc";
+                      maxPumps = 10000): Session =
+  let policy = exactPeerPolicy(expectedPublicKey)
+  let tcp = connectTcp(host, port)
+  tcp.setNonBlocking()
+  let actualSeed = node.sessionSeed(seed)
+  let peer = newPeerLocator("tcp", host & ":" & $port,
+    [("host", host), ("port", $port)])
+  result = newGlowcapSession(tcp, actualSeed, host & ":" & $port, node.sessionLimits, policy)
+  result = node.registerOutbound(result, peer, policy)
+  result = waitForHandshake(result, maxPumps)
+
+proc connectVerified*(node: Node; peer: PeerLocator; expectedPublicKey: string;
+                      seed = "cccccccccccccccccccccccccccccccc";
+                      maxPumps = 10000): Session =
+  let policy = exactPeerPolicy(expectedPublicKey)
+  if peer.transport != "onion":
+    if not peer.hints.hasKey("host") or not peer.hints.hasKey("port"):
+      raise newException(SessionError, "TCP peer locator requires host and port hints")
+    return node.connectVerified(peer.hints["host"], Port(parseInt(peer.hints["port"])),
+      expectedPublicKey, seed, maxPumps)
+  let onionTransport = newOnionNetlayer().dial(peer)
+  let actualSeed = node.sessionSeed(seed)
+  result = newSession(onionTransport, actualSeed, peer.peerUri(), node.sessionLimits, policy)
+  result = node.registerOutbound(result, peer, policy)
+  result = waitForHandshake(result, maxPumps)
+
 proc fetch*(session: Session; name: string): Promise = sessionApi.fetch(session, name)
 proc call*(session: Session; target: CapabilityRef; verb: string;
            args: openArray[SyrupValue]): Promise = sessionApi.call(session, target, verb, args)
 proc waitFor*(session: Session; promise: Promise; maxPumps = 10000): SyrupValue =
   sessionApi.waitFor(session, promise, maxPumps)
+
+proc cancelCall*(session: Session; promise: Promise; reason = "call cancelled"): bool =
+  sessionApi.cancel(session, promise, reason)
+
+proc waitForCallTimeout*(session: Session; promise: Promise; timeoutMs: int): SyrupValue =
+  sessionApi.waitForTimeout(session, promise, timeoutMs)
 
 proc fetchCapability*(session: Session; name: string; maxPumps = 10000): RemoteCapability =
   result.session = session
@@ -557,9 +719,35 @@ proc waitForHandoff*(node: Node; receipt: HandoffReceipt;
   var remaining = maxPumps
   while receipt.promise.state == psPending:
     if remaining <= 0:
-      raise newException(SessionError, "handoff timeout")
+      discard node.handoffs.cancel(receipt, "handoff timeout")
+      raise newException(HandoffTimeoutError, "handoff timeout")
     discard node.poll(1)
     dec remaining
+  if receipt.promise.state == psBroken:
+    node.handoffs.diagnostic(dekHandoffFailure, decHandoff, "handoff failed")
+    raise newException(SessionError, receipt.promise.reason)
+  node.handoffs.diagnostic(dekHandoffSuccess, decNone, "handoff completed")
+  result.session = receipt.session
+  result.reference = receipt.promise.value.descriptor()
+
+proc cancel*(node: Node; receipt: HandoffReceipt; reason = "handoff cancelled"): bool =
+  node.handoffs.cancel(receipt, reason)
+
+proc waitForHandoffTimeout*(node: Node; receipt: HandoffReceipt;
+                           timeoutMs: int): RemoteCapability =
+  if receipt.isNil or receipt.promise.isNil:
+    raise newException(SessionError, "cannot wait for a nil handoff")
+  if timeoutMs < 0:
+    raise newException(SessionError, "timeout must not be negative")
+  let deadline = getMonoTime().ticks + int64(timeoutMs) * 1_000_000
+  while receipt.promise.state == psPending:
+    let remaining = deadline - getMonoTime().ticks
+    if remaining <= 0:
+      discard node.cancel(receipt, "handoff timeout")
+      raise newException(HandoffTimeoutError, "handoff timeout")
+    let work = node.poll(min(1, int(remaining div 1_000_000)), 64)
+    if work == 0:
+      discard node.handoffs.waitReadable(min(1, int(remaining div 1_000_000)))
   if receipt.promise.state == psBroken:
     raise newException(SessionError, receipt.promise.reason)
   result.session = receipt.session
@@ -572,6 +760,7 @@ proc enlivenVia*(node: Node; peer: Session; sturdy: SturdyRef;
   var remaining = maxPumps
   while give.state == psPending:
     if remaining <= 0:
+      discard peer.cancel(give, "handoff timeout")
       raise newException(SessionError, "handoff enlivener timeout")
     discard node.poll(1)
     try: discard peer.pump()

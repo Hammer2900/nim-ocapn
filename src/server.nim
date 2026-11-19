@@ -1,5 +1,5 @@
-import std/[net, selectors, sequtils, tables, times]
-import ./[gifts, session, transport]
+import std/[net, selectors, sequtils, tables, times, monotimes]
+import ./[gifts, identity, session, transport]
 
 type
   TcpManagerStats* = object
@@ -34,13 +34,27 @@ type
     traceSink*: TraceSink
     traceNodeId*: string
     limits: SessionLimits
+    verificationPolicy*: PeerVerificationPolicy
+    identity*: NodeIdentity
+    maxActiveSessions*: int
+    diagnosticSink*: DiagnosticSink
+    diagnosticNodeId*: string
     closed: bool
 
 proc newTcpSessionManager*(host: string; port: Port; seedPrefix, hostPort: string;
                            onOpen: SessionHandler = nil;
                            handshakeTimeoutMs = 30000;
-                           limits = defaultSessionLimits()): TcpSessionManager =
+                           limits = defaultSessionLimits();
+                           verificationPolicy = testingOnlyPeerPolicy;
+                           identity: NodeIdentity = nil;
+                           maxActiveSessions = 256;
+                           diagnosticSink: DiagnosticSink = nil): TcpSessionManager =
   validateSessionLimits(limits)
+  validatePolicy(verificationPolicy)
+  if verificationPolicy.mode != pvmTestingOnly and identity.isNil:
+    raise newException(IdentityError, "strict peer policy requires durable node identity")
+  if maxActiveSessions <= 0:
+    raise newException(SessionError, "max active sessions must be positive")
   result = TcpSessionManager(listener: listenTcp(host, port),
     selector: newSelector[SessionSlot](), slots: initTable[int, SessionSlot](),
     seedPrefix: seedPrefix, hostPort: hostPort, onOpen: onOpen, nextSeed: 0,
@@ -48,7 +62,8 @@ proc newTcpSessionManager*(host: string; port: Port; seedPrefix, hostPort: strin
     forwardedRegistry: ForwardedPromiseRegistry(
       origins: initTable[ForwardedPromiseKey, ForwardedPromiseOrigin](),
       retired: initTable[ForwardedPromiseKey, string]()),
-    limits: limits)
+    limits: limits, verificationPolicy: verificationPolicy, identity: identity,
+    maxActiveSessions: maxActiveSessions, diagnosticSink: diagnosticSink)
   if port == Port(0):
     result.hostPort = host & ":" & $result.listener.localPort()
   result.listener.setNonBlocking()
@@ -59,6 +74,20 @@ proc setTraceSink*(manager: TcpSessionManager; nodeId: string; sink: TraceSink) 
   manager.traceSink = sink
   for slot in manager.slots.values:
     slot.session.setTraceSink(nodeId, sink)
+
+proc setDiagnosticSink*(manager: TcpSessionManager; nodeId: string; sink: DiagnosticSink) =
+  manager.diagnosticNodeId = nodeId
+  manager.diagnosticSink = sink
+  for slot in manager.slots.values:
+    slot.session.setDiagnosticSink(nodeId, sink)
+
+proc reportLimit(manager: TcpSessionManager) =
+  if not manager.diagnosticSink.isNil:
+    manager.diagnosticSink(DiagnosticEvent(
+      timestamp: getMonoTime().ticks.float / 1_000_000_000.0,
+      nodeId: manager.diagnosticNodeId, sessionId: "-",
+      kind: dekResourceLimit, errorCategory: decResource,
+      detail: "active session limit exceeded"))
 
 proc removeSlot(manager: TcpSessionManager; fd: int) =
   let slot = manager.slots.getOrDefault(fd)
@@ -72,16 +101,27 @@ proc removeSlot(manager: TcpSessionManager; fd: int) =
 
 proc acceptReady(manager: TcpSessionManager) =
   try:
+    if manager.slots.len >= manager.maxActiveSessions:
+      let rejected = manager.listener.acceptRawTcpSocket()
+      rejected.close()
+      manager.reportLimit()
+      return
     let transport = manager.listener.acceptTcp()
     transport.setNonBlocking()
-    var seed = manager.seedPrefix
-    while seed.len < 32: seed.add('x')
-    seed.setLen(32)
-    seed[0] = char(ord('a') + manager.nextSeed mod 26)
-    inc manager.nextSeed
-    let session = newGlowcapSession(transport, seed, manager.hostPort, manager.limits)
+    var seed: string
+    if manager.identity.isNil:
+      seed = manager.seedPrefix
+      while seed.len < 32: seed.add('x')
+      seed.setLen(32)
+      seed[0] = char(ord('a') + manager.nextSeed mod 26)
+      inc manager.nextSeed
+    else:
+      seed = manager.identity.sessionSeed()
+    let session = newGlowcapSession(transport, seed, manager.hostPort, manager.limits,
+      manager.verificationPolicy)
     session.forwardedRegistry = manager.forwardedRegistry
     session.setTraceSink(manager.traceNodeId, manager.traceSink)
+    session.setDiagnosticSink(manager.diagnosticNodeId, manager.diagnosticSink)
     session.gifts = manager.gifts
     session.ownsGifts = false
     let slot = SessionSlot(session: session, transport: transport, openNotified: false,

@@ -11,6 +11,7 @@ type
   GiftStats* = object
     deposited*: int
     pendingWithdraws*: int
+    redeemed*: int
   GiftEntry = object
     receiverKey: string
     value: SyrupValue
@@ -24,10 +25,12 @@ type
   GiftTable* = ref object
     gifts: Table[string, GiftEntry]
     waiters: Table[string, seq[GiftWaiter]]
+    redeemed: Table[string, bool]
 
 proc newGiftTable*(): GiftTable =
   GiftTable(gifts: initTable[string, GiftEntry](),
-    waiters: initTable[string, seq[GiftWaiter]]())
+    waiters: initTable[string, seq[GiftWaiter]](),
+    redeemed: initTable[string, bool]())
 
 proc sameProvenance(expected, actual: GiftProvenance): bool =
   (expected.sessionId.len == 0 or actual.sessionId.len == 0 or
@@ -41,6 +44,8 @@ proc deposit*(table: GiftTable; giftId, receiverKey: string; value: SyrupValue;
               provenance = GiftProvenance(); owner: pointer = nil) =
   if giftId.len == 0:
     raise newException(GiftTableError, "gift id is required")
+  if table.redeemed.hasKey(giftId):
+    raise newException(GiftTableError, "gift already redeemed")
   if table.gifts.hasKey(giftId):
     raise newException(GiftTableError, "gift already deposited")
   if table.waiters.hasKey(giftId):
@@ -57,6 +62,8 @@ proc deposit*(table: GiftTable; giftId, receiverKey: string; value: SyrupValue;
       elif not settled(waiter.promise):
         waiter.promise.breakPromise("gift already withdrawn or receiver key mismatch")
     table.waiters.del(giftId)
+    if fulfilled:
+      table.redeemed[giftId] = true
   else:
     table.gifts[giftId] = GiftEntry(receiverKey: receiverKey, value: value,
       provenance: provenance, owner: owner)
@@ -66,6 +73,9 @@ proc withdraw*(table: GiftTable; giftId, receiverKey: string;
   if giftId.len == 0 or receiverKey.len == 0:
     raise newException(GiftTableError, "gift id and receiver key are required")
   result = newPromise()
+  if table.redeemed.hasKey(giftId):
+    result.breakPromise("gift already redeemed")
+    return
   if table.gifts.hasKey(giftId):
     let entry = table.gifts[giftId]
     if (entry.receiverKey.len > 0 and entry.receiverKey != receiverKey) or
@@ -77,6 +87,7 @@ proc withdraw*(table: GiftTable; giftId, receiverKey: string;
       let mapped = if mapper.isNil: entry.value else: mapper(entry.value, entry.owner)
       result.fulfill(mapped)
       table.gifts.del(giftId)
+      table.redeemed[giftId] = true
     return
   table.waiters.mgetOrPut(giftId, @[]).add(GiftWaiter(receiverKey: receiverKey,
     promise: result, provenance: provenance, mapper: mapper))
@@ -90,6 +101,7 @@ proc hasGift*(table: GiftTable; giftId: string): bool =
 
 proc stats*(table: GiftTable): GiftStats =
   result.deposited = table.gifts.len
+  result.redeemed = table.redeemed.len
   for pending in table.waiters.values:
     result.pendingWithdraws += pending.len
 
@@ -118,3 +130,4 @@ proc clear*(table: GiftTable) =
       if not settled(waiter.promise): waiter.promise.breakPromise("gift table cleared")
   table.waiters.clear()
   table.gifts.clear()
+  table.redeemed.clear()

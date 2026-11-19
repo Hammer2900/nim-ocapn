@@ -5,6 +5,7 @@ type
   PromiseListener* = proc(promise: Promise) {.closure.}
   Promise* = ref object
     state*: PromiseState
+    cancelled*: bool
     value*: SyrupValue
     reason*: string
     answerPosition*: int64
@@ -14,6 +15,7 @@ proc newPromise*(): Promise = Promise(state: psPending, answerPosition: -1)
 
 proc fulfill*(promise: Promise; value: SyrupValue) =
   if promise.state != psPending:
+    if promise.cancelled: return
     raise newException(ValueError, "promise already settled")
   promise.value = value
   promise.state = psFulfilled
@@ -24,6 +26,7 @@ proc fulfill*(promise: Promise; value: SyrupValue) =
 
 proc breakPromise*(promise: Promise; reason: string) =
   if promise.state != psPending:
+    if promise.cancelled: return
     raise newException(ValueError, "promise already settled")
   promise.reason = reason
   promise.state = psBroken
@@ -39,3 +42,10 @@ proc onSettle*(promise: Promise; listener: PromiseListener) =
     listener(promise)
 
 proc settled*(promise: Promise): bool = promise.state != psPending
+
+proc cancel*(promise: Promise; reason = "cancelled"): bool =
+  if promise.isNil or promise.state != psPending:
+    return false
+  promise.cancelled = true
+  promise.breakPromise(reason)
+  true

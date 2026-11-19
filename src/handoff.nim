@@ -1,7 +1,8 @@
 import std/[monotimes, net, strutils, sysrand, tables]
-import ./[locators, messages, onion, promises, references, session, syrup, transport]
+import ./[gifts, identity, locators, messages, onion, promises, references, session, syrup, transport]
 
 type
+  HandoffTimeoutError* = object of SessionError
   HandoffLimits* = object
     maxPending*: int
   HandoffStats* = object
@@ -12,6 +13,7 @@ type
   HandoffReceipt* = ref object
     promise*: Promise
     session*: Session
+    manager*: HandoffManager
   PendingEnliven = ref object
     source: Session
     answer: AnswerContext
@@ -35,19 +37,29 @@ type
     closed: bool
     limits: HandoffLimits
     sessionLimits: SessionLimits
+    verificationPolicy: PeerVerificationPolicy
+    identity: NodeIdentity
     outboundCursor: int
     receiverCursor: int
     traceSink: TraceSink
     traceNodeId: string
     traceSequence: int64
+    diagnosticSink: DiagnosticSink
+    diagnosticNodeId: string
 
 proc newHandoffManager*(limits = HandoffLimits(maxPending: 256);
-                        sessionLimits = defaultSessionLimits()): HandoffManager =
+                        sessionLimits = defaultSessionLimits();
+                        verificationPolicy = testingOnlyPeerPolicy;
+                        identity: NodeIdentity = nil): HandoffManager =
   if limits.maxPending < 0:
     raise newException(SessionError, "handoff limits must not be negative")
+  validatePolicy(verificationPolicy)
+  if verificationPolicy.mode != pvmTestingOnly and identity.isNil:
+    raise newException(IdentityError, "strict peer policy requires durable node identity")
   HandoffManager(outboundSessions: @[], pendingEnliven: @[],
     receiverSessions: @[], pendingReceives: @[], limits: limits,
-    sessionLimits: sessionLimits,
+    sessionLimits: sessionLimits, verificationPolicy: verificationPolicy,
+    identity: identity,
     nextHandoffCounts: initTable[string, int64]())
 
 proc ensureOpen(manager: HandoffManager) =
@@ -61,6 +73,21 @@ proc setTraceSink*(manager: HandoffManager; nodeId: string; sink: TraceSink) =
     session.setTraceSink(nodeId, sink)
   for session in manager.receiverSessions:
     session.setTraceSink(nodeId, sink)
+
+proc setDiagnosticSink*(manager: HandoffManager; nodeId: string; sink: DiagnosticSink) =
+  manager.diagnosticNodeId = nodeId
+  manager.diagnosticSink = sink
+  for session in manager.outboundSessions:
+    session.setDiagnosticSink(nodeId, sink)
+  for session in manager.receiverSessions:
+    session.setDiagnosticSink(nodeId, sink)
+
+proc diagnostic*(manager: HandoffManager; kind: DiagnosticEventKind;
+                category = decNone; detail = "") =
+  if manager.diagnosticSink.isNil: return
+  manager.diagnosticSink(DiagnosticEvent(timestamp: getMonoTime().ticks.float / 1_000_000_000.0,
+    nodeId: manager.diagnosticNodeId, sessionId: "handoff", kind: kind,
+    errorCategory: category, detail: detail))
 
 proc trackedSessions*(manager: HandoffManager): seq[Session] =
   ## Sessions owned by the handoff manager, including withdrawal sessions.
@@ -83,6 +110,14 @@ proc traceManager(manager: HandoffManager; operation, detail: string) =
     nodeId: manager.traceNodeId, sessionId: "handoff",
     direction: tdOut, operation: operation, target: "-", answer: "-",
     bytes: 0, promiseState: "-", ownership: detail))
+
+proc registerSession(manager: HandoffManager; session: Session;
+                     peer: PeerLocator): Session =
+  result = session
+  session.setTraceSink(manager.traceNodeId, manager.traceSink)
+  session.setDiagnosticSink(manager.diagnosticNodeId, manager.diagnosticSink)
+  session.remotePeer = peer
+  session.setExpectedPeer(peer, manager.verificationPolicy.mode != pvmTestingOnly)
 
 proc newGiftId(): string =
   let random = urandom(32)
@@ -110,11 +145,12 @@ proc finishEnliven(manager: HandoffManager; item: PendingEnliven; promise: Promi
     item.source.breakAnswer(item.answer, error.msg)
 
 proc openHandoffSession(manager: HandoffManager; peer: PeerLocator): Session =
+  let seed = if manager.identity.isNil: newGiftId() else: manager.identity.sessionSeed()
   if peer.transport == "onion":
     let transport = newOnionNetlayer().dial(peer)
-    result = newSession(transport, newGiftId(), peer.peerUri(), manager.sessionLimits)
-    result.setTraceSink(manager.traceNodeId, manager.traceSink)
-    return
+    result = newSession(transport, seed, peer.peerUri(), manager.sessionLimits,
+      manager.verificationPolicy)
+    return manager.registerSession(result, peer)
   if peer.transport notin ["tcp-testing-only", "tcp"] or
       not peer.hints.hasKey("host") or not peer.hints.hasKey("port"):
     raise newException(SessionError, "unsupported handoff exporter transport")
@@ -122,8 +158,9 @@ proc openHandoffSession(manager: HandoffManager; peer: PeerLocator): Session =
   let port = Port(parseInt(peer.hints["port"]))
   let tcp = connectTcp(host, port)
   tcp.setNonBlocking()
-  result = newGlowcapSession(tcp, newGiftId(), host & ":" & $port, manager.sessionLimits)
-  result.setTraceSink(manager.traceNodeId, manager.traceSink)
+  result = newGlowcapSession(tcp, seed, host & ":" & $port, manager.sessionLimits,
+    manager.verificationPolicy)
+  result = manager.registerSession(result, peer)
 
 proc startHandoffReceiver*(manager: HandoffManager; signedGive: SyrupValue;
                            signer: Session): HandoffReceipt =
@@ -140,6 +177,7 @@ proc startHandoffReceiver*(manager: HandoffManager; signedGive: SyrupValue;
   session.remoteLocation = peer.peerSyrup().encoded()
   session.remotePeer = peer
   if manager.pendingReceives.len >= manager.limits.maxPending:
+    manager.diagnostic(dekResourceLimit, decResource, "pending handoff limit exceeded")
     session.close("pending handoff limit exceeded")
     raise newException(SessionError, "pending handoff limit exceeded")
   manager.receiverSessions.add(session)
@@ -147,7 +185,7 @@ proc startHandoffReceiver*(manager: HandoffManager; signedGive: SyrupValue;
     "receiverSessions=" & $manager.receiverSessions.len &
     ",pendingReceives=" & $manager.pendingReceives.len)
   let completion = newPromise()
-  result = HandoffReceipt(promise: completion, session: session)
+  result = HandoffReceipt(promise: completion, session: session, manager: manager)
   manager.pendingReceives.add(PendingReceive(session: session, signer: signer,
     signedGive: signedGive, result: completion))
 
@@ -169,6 +207,7 @@ proc startSturdyRefSession*(manager: HandoffManager; sturdy: SturdyRef;
     manager.outboundSessions.add(session)
   if not answer.resolver.isNil:
     if manager.pendingEnliven.len >= manager.limits.maxPending:
+      manager.diagnostic(dekResourceLimit, decResource, "pending handoff limit exceeded")
       raise newException(SessionError, "pending handoff limit exceeded")
     manager.pendingEnliven.add(PendingEnliven(source: source, answer: answer,
       sturdy: sturdy, outbound: session))
@@ -247,6 +286,27 @@ proc close*(manager: HandoffManager; reason = "handoff manager closed") =
   manager.outboundSessions.setLen(0)
   manager.receiverSessions.setLen(0)
   manager.nextHandoffCounts.clear()
+
+proc cancel*(manager: HandoffManager; receipt: HandoffReceipt;
+             reason = "handoff cancelled"): bool =
+  if manager.isNil or receipt.isNil or receipt.promise.isNil or
+      receipt.promise.state != psPending:
+    return false
+  var found = false
+  var retained: seq[PendingReceive]
+  for item in manager.pendingReceives:
+    if item.result == receipt.promise:
+      found = true
+      if not item.withdrawal.isNil and item.withdrawal.state == psPending:
+        discard item.session.gifts.cancel(item.withdrawal)
+      if item.session.state != ssClosed:
+        item.session.close(reason)
+    else:
+      retained.add(item)
+  manager.pendingReceives = retained
+  if found:
+    discard receipt.promise.cancel(reason)
+  found
 
 proc stats*(manager: HandoffManager): HandoffStats =
   result.pendingEnliven = manager.pendingEnliven.len

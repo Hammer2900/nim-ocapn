@@ -184,6 +184,23 @@ suite "in-memory Nim CapTP prototype":
     check not shortenedNotified
     check server.stats().promiseListenerCount == 0
 
+  test "op:listen rejects an invalid mode without installing a listener":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let promise = server.newPromisePair()
+    let resolver = client.exportObject(proc(args: seq[SyrupValue]): SyrupValue = list())
+    client.send(record(symbol("op:listen"),
+      exportRef(promise.vow.position).descriptor(), resolver.descriptor(), integer(4)))
+    expect SessionError:
+      discard server.pump()
+    check server.state == ssClosed
+    check server.stats().promiseListenerCount == 0
+    check server.stats().listenerLifecycleCount == 0
+    client.close("invalid listen mode")
+
   test "op:listen can observe a pipelined answer position":
     let pair = inMemoryPair()
     let server = newSession(pair.remote)

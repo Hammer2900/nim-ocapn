@@ -44,7 +44,16 @@ Run its tests with:
 nimble test
 ```
 
-The alpha package version is `0.2.0-alpha` (`nimocapn.nimble`). A public API
+Deployment and operations are documented in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md),
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md), and
+[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md). Run the bounded
+clean-build and two-process lifecycle check with `nimble deploymentTest`.
+
+The beta candidate is `v0.3.0-beta.1`; Nimble metadata uses the compatible
+`0.3.0beta1` spelling (`nimocapn.nimble`). The OCapN and Syrup specification
+revisions remain independently pinned in
+[`docs/SPECIFICATION_BASELINE.md`](docs/SPECIFICATION_BASELINE.md). A public API
 overview is in [`API.md`](API.md). Runnable public-API examples are
 [`examples/api_server.nim`](examples/api_server.nim),
 [`examples/api_client.nim`](examples/api_client.nim), and
@@ -56,6 +65,12 @@ nim c examples/api_server.nim
 nim c examples/api_client.nim
 ./examples/api_client 127.0.0.1 42030
 nim c -r examples/api_handoff.nim
+```
+
+Installed applications can import the package facade directly:
+
+```nim
+import nimocapn
 ```
 
 ## Proposed next modules

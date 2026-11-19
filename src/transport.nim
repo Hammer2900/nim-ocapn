@@ -1,4 +1,5 @@
 import std/[net, nativesockets, os, selectors]
+import ./identity
 
 type
   TransportError* = object of CatchableError
@@ -17,6 +18,8 @@ type
   TcpListener* = ref object
     socket: Socket
     closed: bool
+
+const externalAuthenticatedChannel* = "external-authenticated-channel"
 
 proc inMemoryPair*(): tuple[local, remote: InMemoryTransport] =
   let a = InMemoryTransport()
@@ -46,6 +49,13 @@ method wantsWrite*(transport: Transport): bool {.base.} = false
 method queuedBytes*(transport: Transport): int {.base.} = 0
 
 method waitReadable*(transport: Transport; timeoutMs: int): bool {.base.} = false
+
+method peerIdentity*(transport: Transport): string {.base.} = ""
+
+method peerAuthenticated*(transport: Transport): bool {.base.} = false
+
+method authenticationEvidence*(transport: Transport): TransportAuthEvidence {.base.} =
+  TransportAuthEvidence()
 
 method send*(transport: InMemoryTransport; payload: string) =
   if transport.closed or transport.peer.isNil or transport.peer.closed:
@@ -84,14 +94,19 @@ proc listenTcp*(host: string; port: Port): TcpListener =
     result.socket.close()
     raise newException(TransportError, error.msg)
 
+proc acceptRawTcpSocket*(listener: TcpListener): owned Socket
+
 proc acceptTcp*(listener: TcpListener): TcpTransport =
+  result = newTcpTransportFromSocket(listener.acceptRawTcpSocket())
+
+proc acceptRawTcpSocket*(listener: TcpListener): owned Socket =
   if listener.isNil or listener.closed:
     raise newException(TransportError, "TCP listener is closed")
   try:
     var client: owned(Socket)
     var address = ""
     listener.socket.acceptAddr(client, address)
-    result = TcpTransport(socket: client, maxOutputBytes: 1024 * 1024)
+    result = client
   except CatchableError as error:
     raise newException(TransportError, error.msg)
 

@@ -18,7 +18,8 @@ suite "handoff gift table":
     table.deposit("gift", "receiver", text("value"))
     check first.state == psFulfilled
     check second.state == psBroken
-    table.deposit("gift", "receiver", text("replacement"))
+    expect GiftTableError:
+      table.deposit("gift", "receiver", text("replacement"))
     let denied = table.withdraw("gift", "other")
     check denied.state == psBroken
 
@@ -29,7 +30,7 @@ suite "handoff gift table":
     table.deposit("pending", "", text("value"))
     check owner.state == psFulfilled
     check intruder.state == psBroken
-    check table.withdraw("pending", "owner").state == psPending
+    check table.withdraw("pending", "owner").state == psBroken
 
   test "rejects duplicate deposits and clears waiters":
     let table = newGiftTable()
@@ -40,18 +41,18 @@ suite "handoff gift table":
     expect GiftTableError:
       table.deposit("gift", "receiver", text("two"))
 
-  test "redeemed gift can be awaited again but does not replay":
+  test "redeemed gift rejects replay without retaining a waiter":
     let table = newGiftTable()
     let giftId = repeat("r", 32)
     table.deposit(giftId, "receiver", text("one"))
     let first = table.withdraw(giftId, "receiver")
     check first.state == psFulfilled
     let second = table.withdraw(giftId, "receiver")
-    check second.state == psPending
+    check second.state == psBroken
+    check second.reason == "gift already redeemed"
     check table.stats().deposited == 0
-    check table.stats().pendingWithdraws == 1
-    discard table.cancel(second)
     check table.stats().pendingWithdraws == 0
+    check table.stats().redeemed == 1
 
   test "tracks independent gifts and removes them after withdrawal":
     let table = newGiftTable()

@@ -1,4 +1,4 @@
-import std/[algorithm, strutils]
+import std/[algorithm, strutils, unicode]
 
 type
   SyrupError* = object of CatchableError
@@ -33,9 +33,16 @@ type
     of skSet:
       elements*: seq[SyrupValue]
 
+proc requireUtf8(value: string): string =
+  if validateUtf8(value) >= 0:
+    raise newException(SyrupError, "strings and symbols must contain valid UTF-8")
+  value
+
 proc bytes*(value: string): SyrupValue = SyrupValue(kind: skBytes, data: value)
-proc text*(value: string): SyrupValue = SyrupValue(kind: skString, data: value)
-proc symbol*(value: string): SyrupValue = SyrupValue(kind: skSymbol, data: value)
+proc text*(value: string): SyrupValue =
+  SyrupValue(kind: skString, data: requireUtf8(value))
+proc symbol*(value: string): SyrupValue =
+  SyrupValue(kind: skSymbol, data: requireUtf8(value))
 proc integer*(value: int64): SyrupValue =
   let negative = value < 0
   let spelling = $value
@@ -223,6 +230,8 @@ proc readValue(decoder: var Decoder): SyrupValue =
       raise decoder.fail("invalid numeric/string marker")
     let data = decoder.readLengthValue(terminator)
     if terminator == ':': return bytes(data)
+    if validateUtf8(data) >= 0:
+      raise decoder.fail("invalid UTF-8 string or symbol")
     if terminator == '"': return text(data)
     symbol(data)
   of 't', 'f':
@@ -259,7 +268,14 @@ proc readValue(decoder: var Decoder): SyrupValue =
     SyrupValue(kind: skRecord, label: values[0], fields: values[1 ..^ 1])
   of '#':
     inc decoder.position
-    SyrupValue(kind: skSet, elements: decoder.readContainer('$'))
+    let elements = decoder.readContainer('$')
+    var previous = ""
+    for element in elements:
+      let encodedElement = encoded(element)
+      if encodedElement == previous:
+        raise decoder.fail("duplicate set member")
+      previous = encodedElement
+    SyrupValue(kind: skSet, elements: elements)
   else:
     raise decoder.fail("unexpected marker " & $marker)
 

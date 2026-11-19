@@ -172,14 +172,14 @@ suite "handoff manager lifecycle":
 
     let repeated = cHandoffs.startHandoffReceiver(give.value, c)
     spins = 0
-    while repeated.session.state != ssOpen or cHandoffs.stats().pendingReceives == 0:
+    while repeated.session.state != ssOpen or repeated.promise.state == psPending:
       inc spins
       if spins > 2000: raise newException(CatchableError, "repeat withdraw setup timeout")
       discard a.poll(10)
       discard c.pump()
       cHandoffs.pump()
-    check repeated.promise.state == psPending
-    check cHandoffs.stats().pendingReceives == 1
+    check repeated.promise.state == psBroken
+    check repeated.promise.reason == "gift already redeemed"
     repeated.session.close("redeemed gift must not replay")
     cHandoffs.pump()
     check repeated.promise.state == psBroken

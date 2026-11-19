@@ -1,0 +1,184 @@
+# Roadmap to v1
+
+## Batch B status
+
+- B1 durable identity: implemented as versioned, checksummed local storage
+  with explicit replacement and safe file permissions; Node Sessions now sign
+  `op:start-session` with the durable key across restart and reconnect.
+- B2 expected peer policy: implemented for exact CapTP session public keys;
+  testing-only mode remains explicit in the model and authenticated-netlayer
+  mode fails closed without proof.
+- B3 locator/session binding: partial. Strict Sessions compare the signed
+  advertised locator with the expected locator and independently verify the
+  expected CapTP key. TCP and Onion still do not provide production ownership
+  binding between the transport designator and that key.
+
+The next security batch must define and test the authenticated netlayer
+contract before changing the wire identity or marking Onion peers verified.
+
+This roadmap is based on the draft OCapN documents and the audit of commit
+`e2ea801`. It does not change the wire format, tags, or release metadata.
+
+## P0 — correctness, security, interoperability
+
+1. **Pin a specification/profile revision.** Record exact CapTP, Locator,
+   Netlayer, and Syrup revisions and regenerate the compliance matrix.
+2. **Define node identity policy.** Add explicit durable identity configuration,
+   expected-peer checks, key rotation rules, and negative tests. Touch
+   `crypto.nim`, `session.nim`, `api.nim`; depends on item 1.
+3. **Define locator/session binding.** Specify how a netlayer-authenticated peer
+   binds to the CapTP hello key, especially for Onion Service IDs. Touch
+   `onion.nim`, `session.nim`, and transport tests.
+4. **Introduce one authenticated netlayer adapter seam.** The evidence
+   contract, fail-closed checks, and a real project-specific mutual-TLS
+   provider are present. Official OCapN netlayer interoperability remains
+   unverified.
+5. **Complete handoff failure/replay matrix.** Core one-time gift redemption,
+   duplicate rejection, concurrent receiver arbitration, cancellation, and
+   deterministic fault tests are implemented. Full durable anti-replay across
+   process restarts remains open.
+6. **Finish distributed-GC proof and tests.** Session-local ownership,
+   recursive nested release, forwarding cleanup, disconnect and reconnect
+   regressions are covered in `docs/DISTRIBUTED_GC_MATRIX.md`. A formal proof
+   for arbitrary hostile forwarding graphs and durable cross-process state is
+   still open.
+7. **Run unmodified peer interoperability.** Keep the abort compatibility note,
+   but separately run the upstream fixture without normalization and report the
+   fixture mismatch as such. The pinned Glowcap CLI now passes two-way
+   bootstrap/fetch/invocation in `nimble interopTest`; advanced scenarios remain
+   unsupported or unverified because the peer CLI does not expose them.
+
+### P0-7 status
+
+The pinned Glowcap `0.1.7` CLI passed two-way bootstrap, fetch, invocation,
+and promise settlement as an unmodified external process. This closes the
+supported portion of P0-7. Handoff, external pipelining, malformed-message,
+and production transport scenarios remain explicitly unsupported or
+unverified; see `docs/INTEROPERABILITY_MATRIX.md`.
+
+The next concrete item after the completed local P1-8 work is **P1-9**:
+strict Locator/Syrup vectors. Its remaining profile-selector limitation is
+recorded below.
+
+## P1 — normative completeness
+
+8. Complete cross-peer `op:listen` modes 1/2/3 matrix, including external peers.
+   Local normative coverage is complete for direct, break, same-peer chains,
+   repeated shortening, duplicate listeners, invalid modes, and disconnect;
+   the item remains PARTIAL until an independent peer exposes selectable mode
+   1/2/3 scenarios.
+9. **Expand strict locator/Syrup vectors.** P1-9 vectors now cover URI
+   percent-encoding, Unicode/UTF-8, empty hint values, duplicate hints,
+   canonical byte ordering, nested values, and fragmented/truncated input.
+   Strict parsing rejects malformed percent encodings, fragments, invalid
+   UTF-8, duplicate keys, and empty sturdyref swiss numbers. The item remains
+   PARTIAL as long as the public decoder has no explicit strict/legacy profile
+   selector and continues accepting Glowcap's binary swiss-number form.
+10. **Define cancellation and timeout semantics for public calls and handoffs.**
+    Implemented for local observation, answer/gift cleanup, bounded waits,
+    late callbacks, and independent calls. Remote execution cancellation is
+    not claimed because the selected CapTP profile has no such operation.
+11. **Add transport-neutral conformance tests run unchanged over TCP and Onion.**
+    The shared local scenarios pass over in-memory and raw TCP; the same
+    supported scenarios pass over the project TLS profile. Onion remains
+    conditional and is reported SKIP without a configured service.
+12. **Verify bootstrap/sturdyref against a second independent implementation.**
+   Guile Goblins is pinned as the candidate peer (`2771da67e80b5c2a9e4ed684f24f4f95428cb419`,
+   `v0.18.0-40-g2771da6`) and `nimble independentInteropTest` runs its
+   unmodified upstream OCapN suite. The isolated Nim bootstrap/sturdyref/
+   invocation path and upstream start-session/deliver modules pass with the
+   pinned runtime. Reconnect/cleanup remain UNVERIFIED, while the complete
+   repeated-session suite is UNSUPPORTED by the pinned fixture lifecycle.
+
+## P2 — API and operations
+
+13. Add public identity/configuration and unified netlayer selection API.
+14. Add structured diagnostics/metrics and bounded fault-injection harnesses.
+15. **Document deployment and operational hardening.** The deployment,
+    operations, and troubleshooting guides cover clean installation, identity
+    files, transport profiles, limits, diagnostics, and graceful shutdown.
+    `nimble deploymentTest` covers the public examples, restart, signals,
+    occupied ports, invalid identity paths, and cleanup.
+16. **Prepare beta packaging and reproducible release.** The public
+    `nimocapn` entrypoint, package exclusions, isolated consumer smoke test,
+    local release checklist, and `RELEASING.md` are present.
+    Candidate version: `v0.3.0-beta.1` (`0.3.0beta1` in Nimble); no tag or
+    publication is created.
+
+## Recommended independent batches
+
+- **Batch A:** profile pinning + compliance matrix + strict Syrup/locator vectors.
+- **Batch B:** identity policy and locator binding design/tests.
+- **Batch C:** netlayer adapter seam, with existing TCP/Onion regression tests.
+- **Batch D:** handoff/GC failure matrix and long-run cleanup.
+- **Batch E:** public API improvements and documentation.
+
+Batches A and D can begin in parallel. Batch B should precede production
+netlayer work; Batch C depends on B's identity metadata decision. Public API
+changes should wait until the identity/netlayer contract is stable.
+
+### P1-9 status
+
+The pinned Syrup and Locator vectors pass through `nimble complianceTest`.
+The implementation changes only strict validation and canonical URI emission;
+the legacy binary swiss-number acceptance remains unchanged for Glowcap. The
+remaining gap is profile selection, not an untested malformed-input path.
+
+### P1-10 status
+
+`nimble cancellationTest` covers timeout, cancellation before/after send,
+late fulfillment, competing settlement, independent calls, handoff waiter
+cleanup, and gift replay after cancellation. The next item is P1-11:
+transport-neutral conformance tests over TCP and Onion.
+
+### P1-11 status
+
+`nimble transportConformanceTest` runs the common scenario harness over
+in-memory and raw TCP, the extended two-process TLS profile, and the existing
+Tor test when configured. P1-12 is pinned to Guile Goblins. The isolated
+Nim↔Goblins bootstrap/sturdyref/invocation path now passes with
+the pinned external runtime. Broader reconnect/cleanup coverage remains
+UNVERIFIED, and the full repeated-session suite is UNSUPPORTED by the pinned
+fixture lifecycle.
+
+## First implementation batch
+
+Batch A is complete as a documentation and vector baseline. P1-11 is complete
+for the supported local/TLS profiles. P1-12 has a reproducible external runner
+and a real Nim↔Goblins bootstrap/sturdyref/invocation PASS. Do not advance to
+P2-13 yet: close the remaining Goblins reconnect/cleanup and broader suite
+coverage, or document them as unsupported by a newer pinned Goblins harness.
+
+### P2-13 status
+
+The public facade now supports durable identity paths, explicit peer policy,
+peer locator publication, bootstrap, explicit TCP/Onion selection, bounded
+polling, and idempotent shutdown. Mutual TLS has an explicit client adapter
+under `-d:ssl`; the Node listener remains TCP-based, so unified inbound
+Onion/TLS serving is still open and no security downgrade is allowed.
+
+P2-14 covers structured diagnostics and application-facing operational limits.
+
+### P2-14 status
+
+`DiagnosticEvent`/`DiagnosticSink`, Node snapshots, active-session admission,
+and existing Session/Transport/Handoff limits are exposed through
+`NodeConfig`. Limits reject excess work without a global Node shutdown, and
+the deterministic suite is `nimble diagnosticsTest`. The next item is P2-15:
+deployment documentation and operational hardening.
+
+### P2-15 status
+
+Deployment profiles, optional dependencies, persistent identity operation,
+bounded process lifecycle checks, signal shutdown, port failure handling, and
+troubleshooting are documented. `nimble deploymentTest` builds both public
+examples in isolated Nim caches and verifies invocation, restart, SIGINT/SIGTERM,
+occupied ports, invalid identity paths, and cleanup. The next item is P2-16:
+beta packaging and release reproducibility.
+
+### P2-16 status
+
+Packaging metadata, the public entrypoint, isolated consumer build, local
+release checks, release checklist, and reproducible release instructions are prepared. Registry
+publication, the proposed beta tag, Tor E2E, Goblins reconnect/cleanup, and
+broader external `op:listen` interoperability remain explicitly unverified.

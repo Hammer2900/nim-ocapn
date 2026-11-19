@@ -146,3 +146,7 @@ method wantsWrite*(transport: OnionTransport): bool = transport.inner.wantsWrite
 method queuedBytes*(transport: OnionTransport): int = transport.inner.queuedBytes()
 method waitReadable*(transport: OnionTransport; timeoutMs: int): bool =
   transport.inner.waitReadable(timeoutMs)
+
+method peerIdentity*(transport: OnionTransport): string = ""
+
+method peerAuthenticated*(transport: OnionTransport): bool = transport.authenticated

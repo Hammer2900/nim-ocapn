@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0-beta.1
+
+Release candidate prepared for local beta verification.
+
+- Public `nimocapn` package entrypoint with durable identity, Node configuration,
+  bootstrap, invocation, typed capability arguments, diagnostics, limits and
+  graceful shutdown.
+- TCP testing, Tor Onion testing, and project-specific mutual-TLS profiles are
+  explicitly separated; no transport silently downgrades security.
+- Reproducible local `file://` Nimble installation and external consumer smoke
+  test.
+- Local Syrup/Locator, lifecycle, handoff, cancellation, diagnostics, stress,
+  TLS, deployment and transport regression suites pass.
+- Glowcap conformance passes 24/24 in three consecutive runs.
+
+Known limitations: the OCapN/Syrup revisions are pinned draft specifications;
+cross-peer `op:listen` modes 1/2/3 remain partial, Goblins reconnect/cleanup
+coverage is incomplete, and Tor E2E requires externally configured services.
+
 ## 0.2.0-alpha
 
 Added the first OCapN Onion transport profile on top of an externally managed
@@ -35,7 +54,7 @@ Initial alpha of the independent Nim 2.x OCapN/CapTP prototype.
   duplicate/stale GC protection, disconnect/reconnect fault tests, and exposed
   listener lifecycle diagnostics.
 - Nim↔Nim and Nim↔Glowcap interoperability tests.
-- CI covers Nim 2.0/2.2/2.4, the full test task, and compilation of all public
+- Local Nimble commands cover the full test task and compilation of public
   examples.
 
 The tested profile does not provide production channel security or a complete

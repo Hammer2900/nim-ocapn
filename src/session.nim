@@ -1,14 +1,45 @@
 import std/[strutils, tables, monotimes]
-import ./[crypto, framing, gifts, locators, messages, promises, references, syrup, transport]
+import ./[crypto, framing, gifts, identity, locators, messages, promises, references, syrup, transport]
 
 type
   SessionError* = object of CatchableError
+  PromiseTimeoutError* = object of SessionError
   SessionLimits* = object
     maxFrameBytes*: int
     maxPendingPromises*: int
     maxExports*: int
     maxImports*: int
     maxOutboundBytes*: int
+  DiagnosticEventKind* = enum
+    dekSessionOpened
+    dekSessionClosed
+    dekHandshakeSuccess
+    dekHandshakeFailure
+    dekPeerVerificationFailure
+    dekTransportDisconnect
+    dekTransportError
+    dekPromiseTimeout
+    dekPromiseCancellation
+    dekHandoffSuccess
+    dekHandoffFailure
+    dekResourceLimit
+  DiagnosticErrorCategory* = enum
+    decNone
+    decHandshake
+    decVerification
+    decTransport
+    decPromise
+    decHandoff
+    decResource
+    decProtocol
+  DiagnosticEvent* = object
+    timestamp*: float
+    nodeId*: string
+    sessionId*: string
+    kind*: DiagnosticEventKind
+    errorCategory*: DiagnosticErrorCategory
+    detail*: string
+  DiagnosticSink* = proc(event: DiagnosticEvent) {.closure.}
   SessionStats* = object
     pendingPromises*: int
     importCount*: int
@@ -87,6 +118,11 @@ type
     transport*: Transport
     state*: SessionState
     identityVerified*: bool
+    peerVerified*: bool
+    transportAuthenticated*: bool
+    verificationPolicy*: PeerVerificationPolicy
+    expectedPeer*: PeerLocator
+    enforceExpectedPeer: bool
     localPublicKey*: string
     localSecret: string
     remotePublicKey*: string
@@ -128,12 +164,29 @@ type
     traceSink*: TraceSink
     traceNodeId*: string
     traceSequence*: int64
+    diagnosticSink*: DiagnosticSink
+    diagnosticNodeId*: string
 
 proc defaultSessionLimits*(): SessionLimits =
   SessionLimits(maxFrameBytes: 1024 * 1024, maxPendingPromises: 4096,
     maxExports: 4096, maxImports: 4096, maxOutboundBytes: 1024 * 1024)
 
 proc sessionId*(session: Session): string
+
+proc setDiagnosticSink*(session: Session; nodeId: string; sink: DiagnosticSink) =
+  session.diagnosticNodeId = nodeId
+  session.diagnosticSink = sink
+
+proc diagnosticSessionId(session: Session): string =
+  if session.remotePublicKey.len != 32: return "-"
+  session.sessionId()
+
+proc diagnostic*(session: Session; kind: DiagnosticEventKind;
+                category = decNone; detail = "") =
+  if session.diagnosticSink.isNil: return
+  session.diagnosticSink(DiagnosticEvent(timestamp: getMonoTime().ticks.float / 1_000_000_000.0,
+    nodeId: session.diagnosticNodeId, sessionId: session.diagnosticSessionId(),
+    kind: kind, errorCategory: category, detail: detail))
 
 proc setTraceSink*(session: Session; nodeId: string; sink: TraceSink) =
   session.traceNodeId = nodeId
@@ -255,18 +308,20 @@ proc findForwardedOrigin*(registry: ForwardedPromiseRegistry;
     if key.reference == wanted and key.sessionIdentity.endsWith(suffix):
       return origin
 
-proc newSession*(transport: Transport; seed = "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn";
-                 location = "nim://in-memory";
-                 limits = defaultSessionLimits()): Session =
+proc newBaseSession(transport: Transport; seed: string; limits: SessionLimits;
+                    verificationPolicy: PeerVerificationPolicy;
+                    firstExport: int64; glowcapV1: bool): Session =
   if seed.len != 32: raise newException(SessionError, "session seed must be 32 bytes")
   validateSessionLimits(limits)
+  validatePolicy(verificationPolicy)
   let actualPublicKey = crypto.publicKey(seed)
-  let actualSignature = crypto.sign(seed, location)
   result = Session(transport: transport, state: ssNegotiating, identityVerified: false,
+    peerVerified: false, verificationPolicy: verificationPolicy,
     localPublicKey: actualPublicKey,
     localSecret: seed,
-    references: initReferenceTables(), outboundDescriptorUses: initTable[int64, int64](), nextAnswer: 0,
+    references: initReferenceTables(firstExport), outboundDescriptorUses: initTable[int64, int64](), nextAnswer: 0,
     freeAnswers: @[],
+    glowcapV1: glowcapV1,
     publications: initTable[string, CapabilityRef](), pending: initTable[int64, Promise](),
     answers: initTable[int64, int64](),
     inboundAnswers: initTable[int64, bool](),
@@ -294,50 +349,25 @@ proc newSession*(transport: Transport; seed = "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"
     decoder: newFrameDecoder(limits.maxFrameBytes), limits: limits)
   if transport of TcpTransport:
     TcpTransport(transport).maxOutputBytes = limits.maxOutboundBytes
-  result.send(startSession(bytes(location), bytes(actualPublicKey), bytes(actualSignature)))
+
+
+proc newSession*(transport: Transport; seed = "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn";
+                 location = "nim://in-memory";
+                 limits = defaultSessionLimits();
+                 verificationPolicy = testingOnlyPeerPolicy): Session =
+  result = newBaseSession(transport, seed, limits, verificationPolicy, 0, false)
+  let signature = crypto.sign(seed, location)
+  result.send(startSession(bytes(location), bytes(result.localPublicKey), bytes(signature)))
   result.sentHello = true
 
 proc newGlowcapSession*(transport: Transport; seed, hostPort: string;
-                        limits = defaultSessionLimits()): Session =
-  if seed.len != 32: raise newException(SessionError, "session seed must be 32 bytes")
-  validateSessionLimits(limits)
-  let publicKey = crypto.publicKey(seed)
+                        limits = defaultSessionLimits();
+                        verificationPolicy = testingOnlyPeerPolicy): Session =
+  result = newBaseSession(transport, seed, limits, verificationPolicy, 1, true)
   let location = glowcapLocation(hostPort)
   let signedLocation = record(symbol("my-location"), location).encoded()
   let signature = crypto.sign(seed, signedLocation)
-  result = Session(transport: transport, state: ssNegotiating, identityVerified: false,
-    localPublicKey: publicKey,
-    localSecret: seed,
-    references: initReferenceTables(1), outboundDescriptorUses: initTable[int64, int64](), nextAnswer: 0,
-    freeAnswers: @[], glowcapV1: true,
-    publications: initTable[string, CapabilityRef](), pending: initTable[int64, Promise](),
-    answers: initTable[int64, int64](),
-    inboundAnswers: initTable[int64, bool](),
-    resolvedAnswers: initTable[int64, SyrupValue](),
-    brokenAnswers: initTable[int64, string](),
-    pipelines: initTable[int64, seq[PipelineRequest]](),
-    forwardedRegistry: ForwardedPromiseRegistry(
-      origins: initTable[ForwardedPromiseKey, ForwardedPromiseOrigin](),
-      retired: initTable[ForwardedPromiseKey, string]()),
-    actors: initTable[int64, ActorBehavior](),
-    promiseSlots: initTable[int64, PromiseSlot](),
-    answerSlots: initTable[int64, PromiseSlot](),
-    listenerLifecycles: initTable[ReferenceKey, ListenerLifecycle](),
-    listenerGcSent: initTable[ReferenceKey, bool](),
-    listenerResolverExports: initTable[int64, bool](),
-    listenerResolverDone: initTable[int64, bool](),
-    retiredListenerResolvers: initTable[int64, bool](),
-    seenHandoffCounts: initTable[int64, bool](),
-    gifts: newGiftTable(),
-    ownsGifts: true,
-    giftPromises: @[],
-    activeAnswerPosition: -1,
-    activeListenMode: 3,
-    deferredAnswers: initTable[int64, bool](),
-    decoder: newFrameDecoder(limits.maxFrameBytes), limits: limits)
-  if transport of TcpTransport:
-    TcpTransport(transport).maxOutputBytes = limits.maxOutboundBytes
-  let hello = glowcapStartSession(location, glowcapPublicKey(publicKey), glowcapSignature(signature))
+  let hello = glowcapStartSession(location, glowcapPublicKey(result.localPublicKey), glowcapSignature(signature))
   result.send(hello)
   result.sentHello = true
 
@@ -468,6 +498,48 @@ proc remoteSideId*(session: Session): string =
   if session.remotePublicKey.len != 32:
     raise newException(SessionError, "remote session identity is not available")
   sideId(session.remotePublicKey)
+
+proc verifyPeerPolicy(session: Session): bool =
+  if session.enforceExpectedPeer:
+    try:
+      let encodedLocation = decoded(session.remoteLocation)
+      let advertised = if encodedLocation.kind in {skBytes, skString}:
+          parsePeerUri(encodedLocation.data)
+        else:
+          peerLocator(encodedLocation)
+      if not samePeer(session.expectedPeer, advertised):
+        raise newException(SessionError, "remote locator does not match expected peer")
+    except LocatorError:
+      raise newException(SessionError, "remote peer did not advertise a valid locator")
+  case session.verificationPolicy.mode
+  of pvmTestingOnly:
+    false
+  of pvmExactIdentity:
+    if session.verificationPolicy.expectedPublicKey != session.remotePublicKey:
+      raise newException(SessionError, "unexpected peer identity")
+    true
+  of pvmAuthenticatedNetlayer:
+    let evidence = session.transport.authenticationEvidence()
+    if not evidence.authenticated or not evidence.channelIntegrity or
+        evidence.proofType != externalAuthenticatedChannel or
+        evidence.peerIdentity.len != 32 or
+        evidence.peerIdentity != session.remotePublicKey or
+        session.verificationPolicy.transportVerifier.isNil or
+        not session.verificationPolicy.transportVerifier(evidence, session.remotePublicKey):
+      raise newException(SessionError, "authenticated netlayer identity is unavailable")
+    session.transportAuthenticated = true
+    true
+
+proc isPeerVerified*(session: Session): bool =
+  session.peerVerified
+
+proc isTransportAuthenticated*(session: Session): bool =
+  session.transportAuthenticated
+
+proc setExpectedPeer*(session: Session; peer: PeerLocator; enforce = true) =
+  discard peer.peerSyrup()
+  session.expectedPeer = peer
+  session.enforceExpectedPeer = enforce
 
 proc sessionId*(session: Session): string =
   let local = session.localSideId()
@@ -868,19 +940,45 @@ proc send*(session: Session; message: SyrupValue) =
 
 proc voidValue(): SyrupValue = list()
 
+proc collectDeliveryImports(value: SyrupValue; counts: var Table[int64, int64]) =
+  case value.kind
+  of skRecord:
+    if value.label.kind == skSymbol and
+        value.label.data in ["desc:import-object", "desc:import-promise"] and
+        value.fields.len == 1 and value.fields[0].kind == skInteger and
+        not value.fields[0].negative:
+      try:
+        let position = parseInt(value.fields[0].magnitude)
+        counts[position] = counts.getOrDefault(position) + 1
+      except ValueError:
+        raise newException(SessionError, "invalid delivery import position")
+    else:
+      for field in value.fields:
+        collectDeliveryImports(field, counts)
+  of skList:
+    for item in value.items:
+      collectDeliveryImports(item, counts)
+  of skSet:
+    for item in value.elements:
+      collectDeliveryImports(item, counts)
+  of skDict:
+    for item in value.pairs:
+      collectDeliveryImports(item.key, counts)
+      collectDeliveryImports(item.value, counts)
+  else:
+    discard
+
 proc releaseDeliveryImports(session: Session; args: SyrupValue) =
   if not session.glowcapV1 or args.kind != skList: return
   var counts = initTable[int64, int64]()
-  for value in args.items:
-    if value.kind != skRecord or value.label.kind != skSymbol or
-        value.label.data notin ["desc:import-object", "desc:import-promise"] or
-        value.fields.len != 1 or value.fields[0].kind != skInteger or value.fields[0].negative:
-      continue
-    try:
-      let position = parseInt(value.fields[0].magnitude)
-      counts[position] = counts.getOrDefault(position) + 1
-    except ValueError:
-      raise newException(SessionError, "invalid delivery import position")
+  # A resolver callback transfers its fulfillment value into the promise. The
+  # resolver retains that value before this cleanup runs; do not release the
+  # same descriptor as a temporary delivery import.
+  let resolution = args.items.len > 0 and args.items[0].kind == skSymbol and
+      args.items[0].data in ["fulfill", "break"]
+  for index, value in args.items:
+    if resolution and index == 1: continue
+    collectDeliveryImports(value, counts)
   if counts.len == 0: return
   var positions, deltas: seq[int64]
   for position, count in counts:
@@ -899,6 +997,7 @@ proc sendCall(session: Session; target: CapabilityRef; callArgs: openArray[Syrup
   if session.state != ssOpen:
     raise newException(SessionError, "cannot call before handshake completes")
   if session.pending.len >= session.limits.maxPendingPromises:
+    session.diagnostic(dekResourceLimit, decResource, "pending promise limit exceeded")
     raise newException(SessionError, "pending promise limit exceeded")
   let promise = newPromise()
   result = promise
@@ -907,6 +1006,15 @@ proc sendCall(session: Session; target: CapabilityRef; callArgs: openArray[Syrup
   let resolver = exportOwned(session, proc(values: seq[SyrupValue]): SyrupValue =
     if values.len != 2 or values[0].kind != skSymbol:
       raise newException(SessionError, "invalid promise resolution")
+    if promise.cancelled:
+      if session.answers.getOrDefault(answerPosition, -1'i64) == resolverPosition:
+        session.pending.del(resolverPosition)
+        session.releaseAnswerResolver(resolverPosition)
+        session.answers.del(answerPosition)
+        if session.state != ssClosed:
+          session.send(gcAnswers([answerPosition]))
+        session.recycleAnswerPosition(answerPosition)
+      return voidValue()
     case values[0].data
     of "fulfill":
       if values[1].kind == skRecord and values[1].label.kind == skSymbol and
@@ -1092,6 +1200,7 @@ proc callPipelined*(session: Session; promise: Promise; verb: string;
 
 proc close*(session: Session; reason = "session closed") =
   if session.state == ssClosed: return
+  session.diagnostic(dekSessionClosed, decNone, "session closed")
   session.traceLifecycle("session:close", "-", "closed",
     "registry=" & $cast[uint](session.forwardedRegistry))
   session.state = ssClosed
@@ -1165,6 +1274,7 @@ proc fetch*(session: Session; swissName: string): Promise =
   session.call(exportRef(0), "fetch", [bytes(swissName)])
 
 proc pump*(session: Session): bool
+proc cancel*(session: Session; promise: Promise; reason = "call cancelled"): bool
 
 proc handshakeStarted*(session: Session): bool = session.sentHello
 proc handshakeReceived*(session: Session): bool = session.sawHello
@@ -1175,9 +1285,54 @@ proc waitFor*(session: Session; promise: Promise; maxPumps = 10000): SyrupValue 
   var remaining = maxPumps
   while not settled(promise):
     if remaining <= 0:
-      raise newException(SessionError, "promise wait limit exceeded")
+      discard session.cancel(promise, "call timeout")
+      session.diagnostic(dekPromiseTimeout, decPromise, "promise wait timeout")
+      raise newException(PromiseTimeoutError, "promise wait limit exceeded")
     discard session.pump()
     dec remaining
+  if promise.state == psBroken:
+    raise newException(SessionError, promise.reason)
+  promise.value
+
+proc cancel*(session: Session; promise: Promise;
+             reason = "call cancelled"): bool =
+  if promise.isNil or promise.state != psPending:
+    return false
+  session.diagnostic(dekPromiseCancellation, decPromise, "promise cancelled")
+  var resolverPosition = -1'i64
+  for position, pending in session.pending:
+    if pending == promise:
+      resolverPosition = position
+      break
+  if resolverPosition >= 0:
+    session.pending.del(resolverPosition)
+    session.releaseAnswerResolver(resolverPosition)
+    for answer, resolver in session.answers:
+      if resolver == resolverPosition:
+        session.answers.del(answer)
+        if session.state != ssClosed:
+          session.send(gcAnswers([answer]))
+        session.recycleAnswerPosition(answer)
+        break
+  promise.cancel(reason)
+
+proc waitForTimeout*(session: Session; promise: Promise; timeoutMs: int): SyrupValue =
+  if promise.isNil:
+    raise newException(SessionError, "cannot wait for a nil promise")
+  if timeoutMs < 0:
+    raise newException(SessionError, "timeout must not be negative")
+  let deadline = getMonoTime().ticks + int64(timeoutMs) * 1_000_000
+  while not settled(promise):
+    let remaining = deadline - getMonoTime().ticks
+    if remaining <= 0:
+      discard session.cancel(promise, "call timeout")
+      session.diagnostic(dekPromiseTimeout, decPromise, "promise wait timeout")
+      raise newException(PromiseTimeoutError, "promise wait timeout")
+    let progressed = session.pump()
+    if not progressed:
+      let waitMs = min(1, int(remaining div 1_000_000))
+      if waitMs > 0:
+        discard session.transport.waitReadable(waitMs)
   if promise.state == psBroken:
     raise newException(SessionError, promise.reason)
   promise.value
@@ -1339,7 +1494,9 @@ proc executePipelineRequest(session: Session; capability: SyrupValue;
 proc pumpImpl(session: Session): bool =
   let chunk = session.transport.receive()
   if chunk.len == 0:
-    if session.transport.isClosed(): session.close("transport disconnected")
+    if session.transport.isClosed():
+      session.diagnostic(dekTransportDisconnect, decTransport, "transport disconnected")
+      session.close("transport disconnected")
     return false
   let frames = session.decoder.feed(chunk)
   if frames.len == 0: return false
@@ -1375,9 +1532,17 @@ proc pumpImpl(session: Session): bool =
           message.fields[3].encoded()
         else:
           message.fields[2].encoded()
+      try:
+        session.peerVerified = session.verifyPeerPolicy()
+      except CatchableError:
+        session.diagnostic(dekPeerVerificationFailure, decVerification,
+          "peer verification failed")
+        raise
       session.sawHello = true
       session.identityVerified = true
       session.state = ssOpen
+      session.diagnostic(dekHandshakeSuccess, decHandshake, "handshake complete")
+      session.diagnostic(dekSessionOpened, decNone, "session open")
       continue
     if message.label.data == "op:abort":
       session.close("remote abort")
@@ -1393,6 +1558,12 @@ proc pump*(session: Session): bool =
     result = session.pumpImpl()
     discard session.transport.flushOutput()
   except CatchableError as error:
+    if error.msg.contains("frame") or error.msg.contains("queue limit"):
+      session.diagnostic(dekResourceLimit, decResource, "session resource limit exceeded")
+    elif session.state == ssNegotiating:
+      session.diagnostic(dekHandshakeFailure, decHandshake, "handshake failed")
+    else:
+      session.diagnostic(dekTransportError, decTransport, "transport or protocol error")
     session.traceLifecycle("protocol:error", "-", "closed", error.msg)
     if session.state != ssClosed:
       try:
