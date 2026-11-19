@@ -1,6 +1,6 @@
-# Releasing a beta
+# Releasing a scoped stable version
 
-This procedure prepares a reproducible release candidate using local commands,
+This procedure prepares a reproducible scoped stable release using local commands,
 without publishing or creating a tag.
 
 1. Start from a clean Git checkout and verify the intended commit.
@@ -37,13 +37,13 @@ without publishing or creating a tag.
    nimble install 'https://example.invalid/nim-ocapn.git@<commit>'
    ```
 
-   Nimble 0.26.2 does not accept the hyphenated RC tag as an `@version`
-   selector. To install exactly from the tag, clone it and use
-   `nimble install file:///absolute/path/to/nim-ocapn` instead. The Git URL is
-   a procedure template, not a command to run against an unconfigured remote.
+   For Nimble 0.26.2, clone the stable tag and use
+   `nimble install file:///absolute/path/to/nim-ocapn`. A fixed commit can be
+   installed with `https://...@<commit>`. The Git URL is a procedure template,
+   not a command to run against an unconfigured remote.
 6. Review `docs/BETA_RELEASE_CHECKLIST.md`, package exclusions, license, and
    `git status`. Ensure no identity files, certificates, logs, binaries or
    secrets are tracked.
-7. Change Nimble metadata to `1.0.0rc1` (Nimble 0.26-compatible spelling),
-   commit the change, and create the Git tag `v1.0.0-rc.1`. This task does
+7. Change Nimble metadata to `1.0.0`, commit the change, and create the Git tag
+   `v1.0.0`. This task does
    not create or push it.

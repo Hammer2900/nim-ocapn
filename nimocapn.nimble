@@ -1,6 +1,6 @@
 # Nimble 0.26 splits cached package paths at the last hyphen; keep the
 # prerelease marker attached to the numeric version so clean installs work.
-version       = "1.0.0rc1"
+version       = "1.0.0"
 author        = "NimOCPN contributors"
 description   = "Minimal independent OCapN/CapTP implementation in Nim"
 license       = "Apache-2.0"

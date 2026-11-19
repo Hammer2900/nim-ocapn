@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0
+
+Scoped stable protocol-library release prepared from `v1.0.0-rc.1` without
+wire-format or protocol-scope changes.
+
+- Confirms the documented public `nimocapn` facade, strict per-session identity,
+  promises/pipelining, handoff, distributed GC, cancellation, diagnostics,
+  resource limits, and project-specific mutual TLS profile.
+- Raw TCP and Tor Onion remain testing-only profiles; mutual TLS remains a
+  project-specific authenticated profile rather than a universal OCapN netlayer.
+- Advanced cross-peer `op:listen`, handoff, pipelining, and distributed-GC
+  interoperability remain partially unverified or unsupported.
+
 ## 1.0.0-rc.1
 
 Scoped protocol-library release candidate prepared for local verification.

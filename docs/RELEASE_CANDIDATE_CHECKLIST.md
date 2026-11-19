@@ -1,8 +1,8 @@
-# Scoped v1.0 Release Candidate Checklist
+# Scoped v1.0 Release Checklist
 
-Candidate: `v1.0.0-rc.1` (Nimble metadata: `1.0.0rc1`).
+Release: `v1.0.0` (Nimble metadata: `1.0.0`).
 
-Status: **READY for a scoped release candidate**; not a claim of universal
+Status: **READY for a scoped stable release**; not a claim of universal
 OCapN v1.0 transport security.
 
 ## Verified features
@@ -56,9 +56,9 @@ key unless the application supplies the project-specific out-of-band mapping.
 | Project mutual TLS profile, inbound and outbound | PASS | READY with documented scope |
 | Official universal authenticated OCapN netlayer | UNVERIFIED | OUT OF SCOPE |
 | Onion Service ID to CapTP identity binding | UNVERIFIED | OUT OF SCOPE |
-| Full independent advanced interoperability | PARTIAL | NON-BLOCKER for scoped beta; document limits |
+| Full independent advanced interoperability | PARTIAL | OUT OF SCOPED RELEASE; document limits |
 | TLS inbound Node listener through public facade | PASS | Project-specific profile; blocking TLS handshake limitation remains an operational limitation |
-| Glowcap 24/24 × 3 conformance runner | UNVERIFIED | Runner unavailable in the local checkout |
+| Glowcap 24/24 × 3 conformance runner | UNVERIFIED | Not required for scoped release; runner unavailable locally |
 
 ## Breaking changes and migration
 
@@ -104,8 +104,6 @@ scenario. SKIP, UNSUPPORTED, and UNVERIFIED are not PASS.
 
 ## Versioning recommendation
 
-The proposed tag is `v1.0.0-rc.1`; Nimble uses `1.0.0rc1` because this is the
-accepted prerelease spelling for the installed Nimble version. Create neither
-tag nor release automatically. A stable v1.0 requires a deliberate
-compatibility freeze and a published security scope; it does not require
-claiming the unsupported official netlayer or Onion binding.
+The proposed stable tag is `v1.0.0`. Create neither tag nor release
+automatically from this preparation step. The scoped release does not claim
+the unsupported official netlayer or Onion binding.

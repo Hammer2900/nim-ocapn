@@ -2,7 +2,7 @@
 
 Decision date: 2026-11-19  
 Audit commit: `e915486`  
-Package: `1.0.0rc1` (`v1.0.0-rc.1` candidate)
+Package: `1.0.0` (`v1.0.0` scoped stable)
 
 This document records the smallest defensible v1 scope after the P7 readiness
 audit. P10 adds one explicit identity-profile setting without changing the

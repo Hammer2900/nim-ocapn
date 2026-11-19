@@ -125,7 +125,7 @@ recorded below.
 16. **Prepare beta packaging and reproducible release.** The public
     `nimocapn` entrypoint, package exclusions, isolated consumer smoke test,
     local release checklist, and `RELEASING.md` are present.
-    Candidate version: `v1.0.0-rc.1` (`1.0.0rc1` in Nimble); no tag or
+    Stable version: `v1.0.0` (`1.0.0` in Nimble); no tag or
     publication is created.
 
 ## Recommended independent batches

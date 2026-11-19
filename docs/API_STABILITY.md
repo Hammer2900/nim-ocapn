@@ -1,7 +1,7 @@
 # API Stability and Authentication Contract
 
 `import nimocapn` is the supported application-facing entrypoint for the
-`1.0.0rc1` release candidate. The facade is intentionally small and delegates protocol
+`1.0.0` scoped stable release. The facade is intentionally small and delegates protocol
 state and cleanup to the existing runtime.
 
 ## Stable surface
