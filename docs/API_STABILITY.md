@@ -1,7 +1,7 @@
 # API Stability and Authentication Contract
 
 `import nimocapn` is the supported application-facing entrypoint for the
-`0.3.0beta1` beta. The facade is intentionally small and delegates protocol
+`1.0.0rc1` release candidate. The facade is intentionally small and delegates protocol
 state and cleanup to the existing runtime.
 
 ## Stable surface
@@ -15,6 +15,7 @@ The following operations are the intended stable API:
 - `waitFor`, `waitForCallTimeout`, `cancelCall`;
 - `receiveHandoff`, `waitForHandoff`, `waitForHandoffTimeout`, `Node.cancel`;
 - `Node.poll`, `Node.stats`, `Node.setDiagnosticSink`, and `Node.close`;
+- `closeSession` for an individual public Session;
 - `NodeConfig`, `SessionIdentityMode`, `NetlayerKind`, verification policies,
   diagnostics, limits, and documented error types.
 
@@ -46,13 +47,27 @@ them with read-only accessors.
 | `connect` / `connectUsing` TCP | handshake and protocol validity; testing-only policy by default | peer authentication, confidentiality, or durable Node identity |
 | `connectUsing` Onion | requested Onion locator routing plus CapTP handshake | cryptographic Onion-Service-ID to CapTP-key binding |
 | `connectVerified` | exact advertised CapTP **session** public key and expected locator | durable Node identity; reconnect reuse of the same key |
-| `connectMutualTls` | mutual certificate/CA validation, pinned certificate fingerprint, configured CapTP session-key mapping | official OCapN netlayer status or automatic durable-identity binding |
+| `connectMutualTls` | authenticated-netlayer policy plus mutual certificate/CA validation, pinned certificate fingerprint, and configured CapTP session-key mapping | official OCapN netlayer status or automatic durable-identity binding |
 | inbound listener | local policy and handshake verification before capabilities are exposed | authenticated transport for raw TCP listener |
 | reconnect / handoff auxiliary Session | a new independent session handshake and its own policy check | inherited verification from an earlier Session |
 
 The default `SessionIdentityMode.simPerSession` generates a fresh Ed25519 key
 for every Session. `simLegacyDurable` is an explicit project-specific mode
 for peers requiring the old durable wire key; it never activates implicitly.
+
+`connectMutualTls` rejects the default testing-only policy before opening a
+socket. Its optional `seed` is only an explicit out-of-band session-key
+override for the project TLS profile; the remote certificate and configured
+CapTP key must still match the actual handshake.
+
+With `-d:ssl`, set `NodeConfig.netlayer = nlkMutualTls`, provide
+`NodeConfig.tlsServerConfig`, and use `authenticatedNetlayerPolicy(...)` to
+enable the inbound TLS listener. A configured non-empty
+`expectedPeerCapTpKey` pins one peer session key. For reconnecting or multiple
+ephemeral peer Sessions, `allowUnpinnedPeerCapTpKey = true` may be selected
+explicitly; the verifier must then authorize the authenticated certificate
+and the actual session key according to application policy. This does not
+create a durable Node-to-session binding.
 
 ## Compatibility changes before v1
 

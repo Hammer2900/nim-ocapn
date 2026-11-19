@@ -2,7 +2,7 @@
 
 Decision date: 2026-11-19  
 Audit commit: `e915486`  
-Package: `0.3.0beta1`
+Package: `1.0.0rc1` (`v1.0.0-rc.1` candidate)
 
 This document records the smallest defensible v1 scope after the P7 readiness
 audit. P10 adds one explicit identity-profile setting without changing the
@@ -236,6 +236,11 @@ legacy wire keys must opt into `simLegacyDurable` explicitly.
 The project-specific mutual-TLS profile still needs an out-of-band mapping for
 the expected CapTP session key. TLS does not automatically authenticate the
 durable Node identity, and no such binding is invented here.
+
+The public `connectMutualTls` path now requires
+`pvmAuthenticatedNetlayer` before opening the TLS socket. Its optional explicit
+session seed supports the existing out-of-band mapping; it does not turn a
+testing-only policy into authenticated peer verification.
 
 Option A should be reopened only after an upstream or explicitly selected
 netlayer binding specification exists. The smallest correct change now is a

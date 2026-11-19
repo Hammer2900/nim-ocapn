@@ -64,19 +64,30 @@ let answer = api.waitFor(session, greeter.call("greet", [text("world")]))
 `connectUsing(peer, nlkOnionTestingOnly)`, and never falls back to TCP. The
 project-specific mutual-TLS client adapter is available as
 `connectMutualTls` when compiled with `-d:ssl`; it requires its certificate,
-CA, certificate-fingerprint, and expected CapTP-key configuration.
+CA, certificate-fingerprint, expected CapTP-key configuration, and an
+`authenticatedNetlayerPolicy`. It fails before opening a socket when the Node
+still uses the testing-only policy. Its optional `seed` is an explicit
+out-of-band session-key mapping, not a durable identity binding.
 
 The current `Node` listener is TCP-based. Onion inbound listeners and the
-mutual-TLS server accept path remain transport-level APIs; they are not falsely
-represented as a unified production listener. This is an explicit limitation,
-not a security downgrade.
+mutual-TLS server accept path can be selected with `-d:ssl` by setting
+`NodeConfig.netlayer = nlkMutualTls`, `tlsServerConfig`, and an
+`authenticatedNetlayerPolicy`. The TLS listener reuses the Node Session
+registry and supports multiple accepted Sessions. A non-empty
+`expectedPeerCapTpKey` pins one expected session key; the explicit
+`allowUnpinnedPeerCapTpKey` mode is needed for rotating ephemeral peer keys
+and requires a verifier that checks the certificate evidence. It does not
+authenticate a durable Node identity automatically.
 
 ## Lifecycle and errors
 
-Use `RemoteCapability.call`, `api.waitFor`, `waitForCallTimeout`,
+Use `RemoteCapability.call`, `waitFor`, `waitForCallTimeout`,
 `cancelCall`, `waitForHandoffTimeout`, and `node.close`. A local timeout or
 cancellation does not claim that a remote method stopped executing. A strict
 identity mismatch closes the session before capabilities are exposed.
+
+Use `closeSession(session)` when one connection must be closed while the Node
+continues serving other Sessions.
 
 The low-level `Session`, `CapabilityRef`, Syrup descriptors, and handoff APIs
 remain available for protocol tests and unusual integrations, but ordinary

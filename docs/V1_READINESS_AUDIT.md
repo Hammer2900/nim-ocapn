@@ -2,7 +2,7 @@
 
 Audit date: 2026-11-19  
 Code audit commit: `31012070f3d8291b7177640b186e10060972b245`  
-Package version: `0.3.0beta1` (`v0.3.0-beta.1` candidate)
+Package version: `1.0.0rc1` (`v1.0.0-rc.1` candidate)
 
 The code tree was clean at the start of this audit. The audit made only
 documentation corrections; those corrections are intentionally uncommitted.
@@ -141,7 +141,7 @@ policy.
 - SSL and non-SSL compilation: PASS.
 - Package excludes tests, examples, docs, identities, logs, CSVs, and binaries.
 - Apache-2.0 metadata and license are present.
-- Version is `0.3.0beta1`, compatible with the existing Nimble packaging rule.
+- Version is `1.0.0rc1`, accepted by the installed Nimble packaging rule.
 
 ## Test results
 

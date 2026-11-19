@@ -125,7 +125,7 @@ recorded below.
 16. **Prepare beta packaging and reproducible release.** The public
     `nimocapn` entrypoint, package exclusions, isolated consumer smoke test,
     local release checklist, and `RELEASING.md` are present.
-    Candidate version: `v0.3.0-beta.1` (`0.3.0beta1` in Nimble); no tag or
+    Candidate version: `v1.0.0-rc.1` (`1.0.0rc1` in Nimble); no tag or
     publication is created.
 
 ## Recommended independent batches
@@ -176,9 +176,10 @@ coverage, or document them as unsupported by a newer pinned Goblins harness.
 
 The public facade now supports durable identity paths, explicit peer policy,
 peer locator publication, bootstrap, explicit TCP/Onion selection, bounded
-polling, and idempotent shutdown. Mutual TLS has an explicit client adapter
-under `-d:ssl`; the Node listener remains TCP-based, so unified inbound
-Onion/TLS serving is still open and no security downgrade is allowed.
+polling, and idempotent shutdown. Mutual TLS has explicit client and inbound
+listener paths under `-d:ssl`; the listener reuses the Node Session registry,
+while Onion inbound serving remains outside the public facade and no security
+downgrade is allowed.
 
 P2-14 covers structured diagnostics and application-facing operational limits.
 
@@ -284,3 +285,18 @@ fields remain experimental for beta compatibility. Connection methods now
 explicitly distinguish durable Node identity, ephemeral session keys, exact
 current-session pins, and project-specific TLS evidence. No automatic downgrade
 is permitted.
+
+### P12 status
+
+The public mutual-TLS connection path now rejects testing-only peer policy
+before opening a socket. TLS certificate/fingerprint authentication and the
+configured CapTP session-key mapping are verified independently by the
+transport and Session handshake. The scoped release checklist is
+`docs/RELEASE_CANDIDATE_CHECKLIST.md`; official universal authenticated
+netlayers, Onion identity binding, and full advanced independent
+interoperability remain outside the scoped v1 profile.
+
+The P13 inbound TLS listener uses `NodeConfig.tlsServerConfig` and the same
+Session registry as the TCP listener. Exact expected session-key pinning and
+explicit certificate-backed unpinned ephemeral-key mode are supported; no
+durable identity binding is inferred.

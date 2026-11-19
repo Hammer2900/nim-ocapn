@@ -43,7 +43,7 @@ and limitation notes follow the table.
 | Peer/sturdyref Syrup and URI forms | `src/locators.nim` | PARTIAL | `tests/test_locators.nim`; binary swiss numbers remain legacy-compatible |
 | Per-session Ed25519 hello and Session ID | `src/session.nim`, `src/crypto.nim` | COMPLETE for default profile | `tests/test_session.nim`, `tests/test_identity.nim`; explicit legacy durable mode is project-specific |
 | Secure channel before CapTP | Netlayer responsibility; absent for TCP | MISSING | TCP is explicitly testing-only |
-| `op:start-session`, crossed hello arbitration | `src/messages.nim`, `src/session.nim` | COMPLETE for tested profile | Glowcap `24/24 × 3`; one abort fixture needs compatibility normalization |
+| `op:start-session`, crossed hello arbitration | `src/messages.nim`, `src/session.nim` | COMPLETE for tested profile | Local/session tests PASS; Glowcap `24/24 × 3` runner UNVERIFIED in this checkout; one abort fixture needs compatibility normalization |
 | `op:deliver`, `deliver-only`, answer/resolver | `src/messages.nim`, `src/session.nim` | COMPLETE for tested profile | session, TCP, and public API suites |
 | `op:listen` modes 1/2/3 | `session.nim` listener lifecycle | PARTIAL | direct/chained/break/duplicate/disconnect local matrix; Glowcap per-mode external tests unavailable |
 | Promise resolution, break, pipelining | `promises.nim`, `session.nim`, `api.nim` | COMPLETE for tested profile | chained and forwarded promise regressions |
@@ -102,6 +102,11 @@ The public API contract is intentionally separate from protocol compliance:
 manager, handoff, and reference-table fields remain experimental. The default
 Node profile uses a fresh CapTP key per Session; exact peer checks pin that
 ephemeral session key, not the durable Node identity.
+
+The project-specific TLS profile now has an inbound Node listener under
+`-d:ssl`. It reuses the TCP manager's Session lifecycle and verifies TLS
+certificate evidence before authenticated CapTP sessions are opened. This is
+still project-specific and does not establish an official OCapN netlayer.
 
 Sources: [`CapTP Specification.md`](../../ocapn/draft-specifications/CapTP%20Specification.md),
 [`Locators.md`](../../ocapn/draft-specifications/Locators.md),

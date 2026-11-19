@@ -32,6 +32,13 @@
 - `PeerVerificationPolicy` supports exact expected session keys and fail-closed
   authenticated-netlayer policy. `Node.connectVerified` exposes the exact-key
   path without changing CapTP wire records; reconnect requires a new pin.
+- `Node.connectMutualTls` rejects a testing-only policy before opening a TLS
+  socket; certificate authentication is not silently treated as CapTP peer
+  authorization without the authenticated-netlayer policy.
+- The inbound TLS facade uses the same Session registry and fail-closed
+  verification path. Exact peer-key pinning is available; explicit unpinned
+  mode binds the authenticated TLS channel to the actual signed ephemeral
+  session key but does not prove durable Node ownership.
 - Verification is session-local and occurs before the session is marked open;
   rejected sessions clear pending state and do not publish capabilities.
 
