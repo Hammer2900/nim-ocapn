@@ -1,298 +1,308 @@
-# NimOCPN
+# nim-ocapn
 
-Minimal independent OCapN/CapTP implementation in Nim 2.x.
+> A standalone Nim implementation of the Object Capability Network (OCapN)
+> protocol.
 
-## Current progress
+[![Nim 2.x](https://img.shields.io/badge/Nim-2.x-FFE953?logo=nim)](https://nim-lang.org/)
+[![Version](https://img.shields.io/badge/version-0.3.0beta1-5B8CFF)](./nimocapn.nimble)
+[![Status](https://img.shields.io/badge/status-beta-orange)](./CHANGELOG.md)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./nimocapn.nimble)
 
-### Phase 1 — Glowcap interoperability
+**Navigation:** [Overview](#overview) · [Quick start](#quick-start) ·
+[Features](#features) · [Protocol baseline](#protocol-specification--versioning) ·
+[Interoperability](#interoperability) · [Transports](#transports--security) ·
+[Testing](#testing) · [Documentation](#documentation)
 
-The Glowcap C ABI and driver architecture were inspected. Nim 2.4.0 now calls
-the official Glowcap CLI greeter over TCP and receives `Hello, world`. Exact
-commands are recorded in
-[`experiments/glowcap-ffi/README.md`](experiments/glowcap-ffi/README.md).
+---
 
-### Phase 2 — native Nim foundation
+## Overview
 
-The first independent component is [`src/syrup.nim`](src/syrup.nim). It has no
-external dependencies and currently supports booleans, arbitrary decimal
-integer magnitudes, binary data, UTF-8 strings/symbols as byte payloads,
-single/double floats, lists, dictionaries, records, and sets. Dictionaries and
-sets are canonicalized by encoded-byte ordering.
+OCapN is a distributed object-capability model: applications exchange
+references to objects rather than ambient names or global authority. CapTP is
+the protocol layer that establishes sessions, invokes remote capabilities,
+settles promises, transfers references, and accounts for distributed
+references. Syrup is the canonical data representation used by the wire
+protocol.
 
-[`src/messages.nim`](src/messages.nim) provides small typed constructors for
-the draft wire shapes of session start, deliver, deliver-only, abort, listen,
-and GC messages. [`src/references.nim`](src/references.nim),
-[`src/promises.nim`](src/promises.nim), [`src/transport.nim`](src/transport.nim),
-and [`src/session.nim`](src/session.nim) add a deliberately small in-memory
-prototype. It passes a Nim↔Nim Greeter call and promise fulfillment.
-`src/framing.nim` implements Glowcap's canonical decimal-length Syrup
-byte-string framing, including fragmented/coalesced input and frame limits.
-`src/crypto.nim` verifies Ed25519 through system OpenSSL. `session.nim`
-supports the draft five-field hello and Glowcap's legacy structured hello,
-including `<my-location>` signature verification. The TCP client uses an
-unbuffered Nim socket, completes the reverse hello, fetches `greeter`, and
-prints `Hello, world` against both the official Glowcap CLI and the C ABI TCP
-host in [`experiments/glowcap-c-host/`](experiments/glowcap-c-host/).
+`nim-ocapn` provides these pieces as an independent Nim library for building
+distributed applications:
 
-The reverse direction also works: [`examples/native_greeter_server.nim`](examples/native_greeter_server.nim)
-publishes `nim-greeter`, which the official Glowcap CLI can fetch and call.
-Reproduction is documented in [`experiments/native-greeter/README.md`](experiments/native-greeter/README.md).
+- durable node identity and CapTP sessions;
+- remote capabilities, promises, pipelining, handoff, and lifecycle cleanup;
+- OCapN locators and sturdy references;
+- testing TCP, Tor Onion, and a project-specific mutual-TLS profile;
+- bounded polling, diagnostics, cancellation, and resource limits.
 
-Run its tests with:
+It is a protocol library, not an actor framework, mailbox runtime, scheduler,
+VM, persistence layer, or Goblins port.
+
+## At a glance
+
+| Property | Current profile |
+| --- | --- |
+| Language | Nim 2.x |
+| Package version | `0.3.0beta1` (`v0.3.0-beta.1` candidate) |
+| Protocol baseline | Pinned OCapN and Syrup draft revisions; see [baseline](#protocol-specification--versioning) |
+| Serialization | Syrup with canonical framing and strict test vectors |
+| Transports | TCP testing-only, Tor Onion testing-only, project-specific mutual TLS |
+| Runtime dependencies | None for the core library |
+| Development status | Beta candidate; local release gate passed |
+| Independent interoperability | Glowcap two-way bootstrap/invocation; selected Nim→Goblins scenarios |
+
+> [!WARNING]
+> Raw TCP and Tor Onion are unverified/testing profiles. The mutual-TLS path
+> is a project-specific authenticated profile, not an official standardized
+> OCapN Netlayer. Do not infer production security from a successful test call.
+
+---
+
+## Quick start
+
+The package is currently installed from Git or a local checkout. The
+repository is private in this development snapshot, so Git authentication may
+be required:
 
 ```sh
-nimble test
+nimble install 'git+https://github.com/Hammer2900/nim-ocapn.git@4464f2fedf0f081898bf0d9f6ce39568bcd543cd'
 ```
 
-Deployment and operations are documented in
-[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md),
-[`docs/OPERATIONS.md`](docs/OPERATIONS.md), and
-[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md). Run the bounded
-clean-build and two-process lifecycle check with `nimble deploymentTest`.
-
-The beta candidate is `v0.3.0-beta.1`; Nimble metadata uses the compatible
-`0.3.0beta1` spelling (`nimocapn.nimble`). The OCapN and Syrup specification
-revisions remain independently pinned in
-[`docs/SPECIFICATION_BASELINE.md`](docs/SPECIFICATION_BASELINE.md). A public API
-overview is in [`API.md`](API.md). Runnable public-API examples are
-[`examples/api_server.nim`](examples/api_server.nim),
-[`examples/api_client.nim`](examples/api_client.nim), and
-[`examples/api_handoff.nim`](examples/api_handoff.nim):
-
-```sh
-nim c examples/api_server.nim
-./examples/api_server 42030
-nim c examples/api_client.nim
-./examples/api_client 127.0.0.1 42030
-nim c -r examples/api_handoff.nim
-```
-
-Installed applications can import the package facade directly:
+The following uses the public `nimocapn` facade and the public `syrup` value
+module. It creates a persistent identity, publishes a greeter, connects to a
+peer, bootstraps the capability, invokes it, and closes the node.
 
 ```nim
+import std/[net, os]
 import nimocapn
+import syrup
+
+var config = defaultNodeConfig(Port(42030))
+config.identityPath = getEnv("NIM_OCAPN_IDENTITY", "server.identity")
+config.netlayer = nlkTcpTestingOnly
+config.verificationPolicy = testingOnlyPeerPolicy
+
+let node = newNode(config)
+node.publish("greeter", proc(args: seq[SyrupValue]): SyrupValue =
+  if args.len == 1 and args[0].kind == skString:
+    text("Hello, " & args[0].data)
+  else:
+    raise newException(CatchableError, "greeter expects one string"))
+
+echo node.locator().peerUri()
+try:
+  while true:
+    discard node.poll(1000, 64)
+finally:
+  node.close()
 ```
 
-## Proposed next modules
-
-Keep the protocol layers small and separate: `messages.nim` for CapTP values,
-`references.nim`, `promises.nim`, and `locators.nim` for capability state and
-sturdyref values, `session.nim` for
-handshake/framing, and `transport.nim` for an interface plus an in-memory test
-transport. Add `peer.nim` only when session/bootstrap behavior requires it.
-Reference tables are now explicit and session-local: export/import positions
-from different sessions cannot alias each other. Pending promises are tracked,
-released on settlement, and broken when a transport disconnects. The test suite
-also covers two simultaneous sessions using the same numeric capability
-positions for different objects. A non-blocking multi-session TCP manager and
-the [`native_multi_server.nim`](examples/native_multi_server.nim) example now
-serve multiple clients through a selector. `Session.callPipelined(promise,
-verb, args)` sends a real `desc:answer` call before the first promise is
-resolved; the in-memory tests cover a factory returning a capability followed
-by an immediate method call through that promise.
-Settled answers are now released with `op:gc-answers`; imported capabilities
-remain independently tracked until the application releases them.
-Protocol, handshake, and transport exceptions close the affected session,
-break its pending promises, and clear its per-session tables.
-The TCP session manager has an integration test proving that a malformed peer
-is removed while a simultaneous healthy peer continues through fetch and call.
-Closing a session also closes its underlying transport; selector cleanup is
-safe when a protocol error has already closed the socket.
-The manager tests also cover a client disconnect while a promise is pending;
-that promise is broken without affecting a second active client.
-`newTcpSessionManager` expires peers that remain in handshake beyond its
-30-second default (`handshakeTimeoutMs` can be tuned for tests or deployments).
-Client fds are removed from the selector while being processed and registered
-again only for live sessions, preventing epoll fd-reuse registration errors;
-the TCP tests exercise repeated sequential connect/disconnect cycles.
-The session tests also cover fragmented/incomplete frames, malformed framing,
-and concurrent calls with independent promises.
-They also cover the four-field `op:deliver` form used by the Python
-conformance peer when both answer-position and resolve-me are false.
-The external GC suite now passes for export deltas and answer collection.
-The external listen suite also passes for pending, fulfilled, broken, and
-already-settled promises.
-The external abort, deliver, GC, listen, and start-session modules all pass
-against the conformance fixture. The fixture publishes the sturdyref enlivener,
-opens an outbound session before its peer hello when needed, and resolves both
-crossed-hello directions using the specified public-identifier comparison.
-Against the external `ocapn-test-suite`, valid, invalid, and crossed
-`op:start-session` cases pass over the testing-only TCP netlayer.
-The `third_party_handoffs` module passes 7/7 with a fresh fixture process.
-Full discovery still needs fixture isolation between long-lived scenarios.
-
-The higher-level `api.nim` module exposes `Node`, `publish`, `connect`,
-`fetchCapability`, `call`, `waitFor`, `poll`, and `close` for applications that do not need to
-construct CapTP records manually. Promise-valued arguments can cross multiple
-Nim peers with preserved identity, shortening, chaining, and break propagation.
-`op:listen` modes 1/2/3 have direct and chained regression coverage; listener
-GC has descriptor-aware lifecycle tracking, duplicate-GC protection, and
-disconnect/reconnect fault tests.
-`Node.connect` bounds the handshake loop with `maxPumps` (10,000 by default)
-and closes the transport if the peer never completes negotiation.
-The message layer has exact constructors and validation for the signed
-handoff descriptors. Gift deposit/withdraw routing and both conformance
-handoff directions are implemented; full distributed-GC collection across
-arbitrary independent runtimes remains outside the current alpha profile.
-Sturdyref decoding accepts the binary swiss-number representation emitted by
-the conformance suite, and the fixture's inbound crossed-hello case now passes.
-`src/handoff.nim` owns both handoff directions end to end: it reuses an
-existing peer session when available, fetches remote capabilities, deposits
-gifts, fulfills deferred answers with signed `desc:handoff-give`, and creates
-signed `desc:handoff-receive` withdrawals. The conformance fixture only wires
-this manager into its published actors and polling loop. Completed pending
-operations are pruned during `pump`; `HandoffManager.close()` breaks unfinished
-enliven answers and closes all manager-owned auxiliary sessions idempotently.
-`verifySignatureEnvelope` checks the canonical encoded handoff-give object
-against its Ed25519 public key before any future handoff routing consumes it.
-`validHandoffGive` and `validHandoffReceive` reject malformed descriptor shapes,
-invalid session/side identifiers, invalid peer locators, and empty gift IDs
-before signature or routing work.
-`verifyHandoffReceive` additionally checks the outer receive certificate using
-the receiver key carried by the nested handoff-give.
-Incoming delivery arguments apply this validation recursively and close the
-affected session on malformed handoff values.
-Handoff counts are tracked per session and replayed counts are rejected.
-The receive certificate is also bound to the current session ID and remote side
-ID, so a certificate for another exporter/receiver connection is rejected.
-Session integration tests cover both acceptance of a correctly signed receive
-certificate and rejection of a tampered one.
-`gifts.nim` provides a transport-independent gift table for pending
-deposit/withdraw operations, receiver-key checks, duplicate protection, and
-cleanup. `Session.depositGift` and `Session.withdrawGift` expose that table at
-the low-level session API; automatic bootstrap wiring remains a later handoff
-step. Bootstrap `op:deliver-only` now accepts the specified `deposit-gift`
-shape and stores the gift without a receiver key until withdrawal. The
-bootstrap `withdraw-gift` path now verifies the signed receive certificate and
-fulfills its CapTP answer from the gift table, including pending gifts.
-Invalid withdraw certificates break only their answer and do not abort the
-otherwise valid CapTP session.
-Pending withdrawals bind the first receiver key and break waiters using a
-different key, preventing an unauthorized pending claimant.
-Successful withdrawal consumes a gift; later withdrawal attempts do not reuse
-the same capability, while a new deposit starts a new gift lifecycle.
-Disconnecting a session cancels only that session's pending gift waiters,
-without clearing the manager-wide table or other clients' gifts.
-TCP session managers share one gift table across their sessions, while each
-session retains independent references, promises, and handshake state. Closing
-one client does not clear the manager-owned gift table; manager shutdown does.
-Sessions now retain both handshake public keys and expose deterministic
-`localSideId`, `remoteSideId`, and `sessionId` values matching the conformance
-suite's canonical SHA-256 derivation.
-
-For actor-style applications, `Session.exportActor` and `publishActor` provide
-a session-aware behavior that can send deliveries to capability arguments;
-ordinary `exportObject`/`publishObject` behaviors remain request/response-only.
-`Session.deliverCall` adds an outbound answer/resolver when an actor needs a
-reply from another capability, including automatic answer GC after settlement.
-`Node.enliven(sturdyRef)` performs a TCP handshake and bootstrap fetch, returning
-a live `RemoteCapability`; `examples/sturdyref_client.nim` exercises this path.
-`Node` owns a `HandoffManager`; `Node.poll()` pumps its auxiliary handoff
-sessions and `Node.close()` closes them before shutting down the TCP manager.
-`Node.poll(timeoutMs, maxWork)` defaults to a bounded 64 units of work and
-uses round-robin cursors for outbound sessions. `Node.stats()` exposes active
-sessions, pending promises, imports/exports, listener lifecycles, queued bytes,
-and pending handoffs.
-Session limits cover frame size, pending promises, imports/exports, and bounded
-TCP output queues; `HandoffLimits` separately bounds pending handoff work.
-Applications can pass both limit objects to `newNode(...)` to configure these
-budgets without using the lower-level TCP manager.
-`startHandoffReceiver` returns a `HandoffReceipt` containing both the
-settlement promise and the receiver session, so the imported capability is
-called through the correct connection. `tests/test_handoff.nim` covers a real
-three-peer A → B → C handoff followed by a method call on the transferred
-object.
-Applications can call `publishHandoffEnlivener()`, `receiveHandoff()`, and
-`waitForHandoff()` without managing the handoff tables directly.
-`valueArg()` and `capabilityArg()` provide a small typed argument layer for
-`Node.call()`: same-session references use their normal descriptor, while a
-reference from another live session is sent as a signed nested handoff-give.
-For example, a receiving application can expose a typed endpoint without
-handling Syrup descriptors:
+The matching client connects, bootstraps `greeter`, calls `greet`, and exits:
 
 ```nim
-nodeC.publishTyped("register", proc(session: Session;
-    args: seq[ReceivedArgument]): SyrupValue =
-  let monster = args[0].capability
-  text("registered"))
+import std/[net, os, strutils]
+import nimocapn
+import syrup
 
-discard nodeB.call(registerOnC, "register", [capabilityArg(monsterFromA)])
+var config = defaultNodeConfig()
+config.identityPath = getEnv("NIM_OCAPN_IDENTITY", "client.identity")
+config.netlayer = nlkTcpTestingOnly
+config.verificationPolicy = testingOnlyPeerPolicy
+
+let node = newNode(config)
+let peer = parsePeerUri(paramStr(1))
+let session = node.connectUsing(peer, nlkTcpTestingOnly)
+let greeter = node.bootstrap(session, "greeter")
+let result = waitFor(session, greeter.call("greet", [text("world")]))
+echo result.data
+node.close()
 ```
-Repeated enlivening on one `Node` reuses the same session-local capability for
-the same transport/designator/swiss-number identity; `Node.close` releases its
-outbound sessions.
-`locators.nim` also supports the draft `ocapn://` peer and `/s/<swiss-num>`
-sturdyref URI forms with query hints.
-Use `Node.forget(sturdyRef)` to close and remove one cached outbound session;
-closed cache entries are discarded automatically on the next `enliven`.
-[`examples/conformance_server.nim`](examples/conformance_server.nim) contains
-the suite's Greeter, Echo, Car Factory, and TCP sturdyref-enlivener fixtures for focused interoperability
-work. Sessions retain the remote locator needed for future crossed-session
-arbitration. With the suite's temporary Python environment, run its delivery tests with:
+
+Runnable versions are [`examples/simple_server.nim`](examples/simple_server.nim)
+and [`examples/simple_client.nim`](examples/simple_client.nim). They include
+bounded lifecycle handling and persistent identity configuration.
+
+<details>
+<summary>Run the examples from a checkout</summary>
 
 ```sh
-nim c examples/conformance_server.nim
-./examples/conformance_server 42064
-/tmp/nim-ocapn-conformance-venv/bin/python ../ocapn-test-suite/test_runner.py \
-  'ocapn://0123456789abcdef0123456789abcdef.tcp-testing-only?host=127.0.0.1&port=42064' \
-  --test-module tests.op_deliver
+nim c examples/simple_server.nim
+nim c examples/simple_client.nim
+
+NIM_OCAPN_IDENTITY=server.identity ./examples/simple_server 42030
+NIM_OCAPN_IDENTITY=client.identity ./examples/simple_client 'ocapn://...'
 ```
 
-The full external suite is best run with a fresh fixture per module, because
-the upstream discovery runner shares netlayer state between test classes. The
-isolated runner starts a fresh server and uses a distinct TCP port for every
-test/run, then aggregates all 24 tests:
+The server prints the peer locator. Copy that locator to the client process.
+TCP in this example is intentionally `tcp-testing-only`.
+</details>
 
-```sh
-python3 experiments/run_conformance_isolated.py --runs 3
-```
+---
 
-## Supported profile and security status
+## Features
 
-The alpha targets the CapTP/OCapN 1.0-style profile exercised by the local
-conformance suite: canonical Syrup framing, `op:start-session`, Ed25519
-`Ed25519_SHA256` identity verification, CapTP deliver/answer/GC operations,
-and the tested third-party handoff descriptors. It also accepts Glowcap's
-legacy structured hello for interoperability. The checked peers are Nim 2.4.0
-and the Glowcap checkout used by this workspace; no immutable Glowcap release
-tag is recorded in this umbrella checkout.
+| Capability | Status |
+| --- | --- |
+| CapTP sessions and signed session establishment | Implemented and covered by local and Glowcap tests |
+| Remote capabilities and bootstrap/fetch | Implemented; two-way Nim↔Glowcap bootstrap/invocation passes |
+| Promise fulfillment, rejection, and pipelining | Implemented; Nim multi-peer and local conformance coverage |
+| `op:listen` modes 1/2/3 | Local matrix covered; cross-peer mode selection remains partial |
+| Capability handoff | Implemented with three-/four-node and concurrent Nim coverage |
+| Distributed reference lifecycle and GC accounting | Implemented for tested profiles; independent-runtime coverage is incomplete |
+| Sturdyrefs and locators | Implemented with strict and legacy compatibility cases |
+| Persistent Ed25519 node identity | Implemented; reused in CapTP session identity across restart |
+| Cancellation and timeouts | Implemented for local observation and cleanup; no remote execution cancellation claim |
+| Diagnostics and resource limits | Implemented through `NodeConfig`, `DiagnosticSink`, and `Node.stats()` |
 
-The TCP netlayer is explicitly `tcp-testing-only`. It is unencrypted and has
-no production channel security, certificate authority, or authorization policy.
-Do not deploy it as a production transport. Distributed GC, persistence, actor
-runtime, scheduler, and VM integration are outside this alpha.
+These statuses describe the Nim implementation. They do not imply that every
+feature is supported by an independent peer or every transport.
 
-For a 30-minute local soak with four clients and CSV diagnostics:
+## Protocol specification & versioning
 
-```sh
-nim c experiments/soak.nim
-./experiments/soak 1800 4 soak-0.1.0-alpha.csv
-```
+OCapN and Syrup are evolving draft specifications. This library therefore
+pins the exact upstream revisions used for its compatibility profile:
 
-The deterministic queue test is part of `nimble test`. To probe the actual
-nonblocking loopback socket path against a peer that never reads:
+| Specification | Pinned revision | Role |
+| --- | --- | --- |
+| [OCapN](https://github.com/ocapn/ocapn) | `ebf68742a40a89fff4730886a8788c5fe1bc9b96` | CapTP, Locators, Netlayers, Model, and Notation drafts |
+| [Syrup](https://github.com/ocapn/syrup) | `931fa528b8ddda976febba577fb09ee0726845d4` | Canonical data encoding and framing dependency |
 
-```sh
-nim c experiments/tcp_backpressure_probe.nim
-./experiments/tcp_backpressure_probe
-```
+`0.3.0beta1` is the version of this Nim library. It is not an OCapN
+specification version, and this project does not claim an official stable
+“OCapN v1.0” protocol release. A newer upstream commit is not adopted
+automatically: changing the baseline requires review, updated vectors,
+compatibility analysis, and interoperability checks. PATCH/MINOR/MAJOR release
+decisions are based on the effect on this library's API and compatibility, not
+merely on the existence of a new upstream commit.
 
-To inspect a bootstrap publication independently of the conformance runner:
+See the complete evidence and content hashes in
+[SPECIFICATION_BASELINE.md](docs/SPECIFICATION_BASELINE.md).
 
-```sh
-nim c examples/fetch_swiss.nim
-./examples/fetch_swiss 127.0.0.1 42064 gi02I1qghIwPiKGKleCQAOhpy3ZtYRpB
-```
+---
 
-`examples/invoke_sturdyref.nim` separately invokes that enlivener and confirms
-that it creates an outbound TCP session; crossed-hello arbitration remains a
-separate multi-peer test.
+## Interoperability
 
-Typical client-side use is:
+Interoperability results are intentionally separated from Nim↔Nim tests.
+
+| Peer or suite | Pinned version/revision | Result |
+| --- | --- | --- |
+| Glowcap | `0.1.7`, `ced95ae4d7a591441c062ca95e76dd75ea181c65` | Nim↔Glowcap bootstrap, invocation, and promise scenarios pass in both directions |
+| Guile Goblins | `2771da67e80b5c2a9e4ed684f24f4f95428cb419` | Nim→Goblins bootstrap/sturdyref/invocation scenarios pass in the pinned harness |
+| OCapN upstream test suite | `31f0b806108a55d76a6ede5af7e413818dfb9221` | Selected session, deliver, GC, listen, and handoff modules pass against Goblins |
+| Goblins reconnect/cleanup | Same pinned Goblins revision | Incomplete/UNVERIFIED; the full repeated-session fixture is unsupported |
+| Cross-peer `op:listen` modes 1/2/3 | External peer CLI limitations | PARTIAL/UNVERIFIED; local normative coverage exists |
+
+The upstream suite running against Goblins is not, by itself, proof of
+Nim↔Goblins support for every operation. See
+[INTEROPERABILITY_MATRIX.md](docs/INTEROPERABILITY_MATRIX.md).
+
+## Transports & security
+
+| Transport | Authentication | Intended use | Limitations |
+| --- | --- | --- | --- |
+| Raw TCP (`nlkTcpTestingOnly`) | Unverified | Local tests and development | Unencrypted; no production channel security |
+| Tor Onion (`nlkOnionTestingOnly`) | Routing only; unverified CapTP identity binding | Explicit Tor integration tests | Requires an external Tor daemon and Onion Services; no direct-TCP fallback |
+| Mutual TLS (`nlkMutualTls`) | Project-specific certificate and CapTP-key binding | Authenticated Nim↔Nim profile | Not an official OCapN Netlayer; inbound unified TLS listener is not exposed by `Node` |
+
+Transport selection is explicit. An authenticated path does not silently fall
+back to TCP or Onion. Node's convenient listener is currently TCP-based;
+Onion and mutual-TLS listener APIs remain lower-level integration paths.
+
+## Configuration & diagnostics
 
 ```nim
-let peer = newNode(port = Port(0))
-let session = peer.connect("127.0.0.1", Port(42030))
-let greeter = session.fetchCapability("greeter")
-let result = session.waitFor(greeter.call("greet", [text("world")]))
+import std/net
+import nimocapn
+
+var config = defaultNodeConfig(Port(42030))
+config.identityPath = "node.identity"
+config.netlayer = nlkTcpTestingOnly
+config.verificationPolicy = testingOnlyPeerPolicy
+config.maxActiveSessions = 256
+config.handshakeTimeoutMs = 30_000
+
+let node = newNode(config)
+let snapshot = node.stats()
+node.close()
 ```
+
+Applications can configure persistent identity, exact or authenticated peer
+verification policies, session and handoff limits, handshake deadlines, and a
+typed `DiagnosticSink`. `Node.stats()` exposes active sessions, pending
+promises, imports/exports, handoffs, forwarded references, gifts, and queued
+bytes. Diagnostics never intentionally include private keys or capability
+payloads.
+
+See [PUBLIC_API_GUIDE.md](docs/PUBLIC_API_GUIDE.md) and
+[DIAGNOSTICS_AND_LIMITS.md](docs/DIAGNOSTICS_AND_LIMITS.md).
+
+---
+
+## Testing
+
+| Command | Scope |
+| --- | --- |
+| `nimble test` | Core Syrup, messages, locators, transports, sessions, handoff, and identity |
+| `nimble complianceTest` | Strict Syrup and Locator vectors |
+| `nimble identityTest` | Durable identity and peer verification |
+| `nimble stressTest` | Sequential/concurrent handoff and disconnect stress |
+| `nimble handoffFailureTest` | Replay, timeout, disconnect, and cleanup matrix |
+| `nimble distributedGcTest` | Import/export and reference lifecycle |
+| `nimble cancellationTest` | Call/handoff timeout and cancellation semantics |
+| `nimble diagnosticsTest` | Diagnostic events and resource limits |
+| `nimble publicApiTest` | Public Node facade and lifecycle |
+| `nimble deploymentTest` | Clean example builds, restart, signals, ports, and identity errors |
+| `nimble packagingTest` | Local `file://` installation and external consumer |
+| `nimble tlsTest` | Project-specific mutual-TLS E2E |
+| `nimble transportConformanceTest` | Common in-memory/TCP/TLS scenarios; Onion is conditional |
+| `nimble interopTest` | Separate-process Glowcap interoperability |
+| `nimble independentInteropTest` | Optional Guile Goblins/upstream-suite integration |
+
+The ordinary library build needs Nim 2.x, Nimble, a C compiler, and platform
+socket libraries. Python, Guile/Goblins, Glowcap, OpenSSL, and Tor are only
+needed for their optional tests or transport profiles.
+
+## Documentation
+
+| Topic | Document |
+| --- | --- |
+| Public API | [docs/PUBLIC_API_GUIDE.md](docs/PUBLIC_API_GUIDE.md) |
+| Deployment | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| Operations and limits | [docs/OPERATIONS.md](docs/OPERATIONS.md) · [docs/DIAGNOSTICS_AND_LIMITS.md](docs/DIAGNOSTICS_AND_LIMITS.md) |
+| Specification baseline | [docs/SPECIFICATION_BASELINE.md](docs/SPECIFICATION_BASELINE.md) |
+| Protocol compliance | [docs/PROTOCOL_COMPLIANCE.md](docs/PROTOCOL_COMPLIANCE.md) |
+| Interoperability | [docs/INTEROPERABILITY_MATRIX.md](docs/INTEROPERABILITY_MATRIX.md) |
+| Security | [docs/SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md) |
+| Roadmap | [docs/ROADMAP_TO_V1.md](docs/ROADMAP_TO_V1.md) |
+| Release procedure | [docs/RELEASING.md](docs/RELEASING.md) |
+| Troubleshooting | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
+
+## Project status & known limitations
+
+`nim-ocapn` is a beta candidate, not a declaration of complete OCapN
+compliance. The local release gate and Glowcap conformance suite pass, while
+some cross-peer and transport scenarios remain partial or environment
+dependent:
+
+- the pinned OCapN and Syrup documents are drafts;
+- external `op:listen` mode interoperability is not fully demonstrated;
+- Goblins reconnect/cleanup coverage is incomplete;
+- Tor Onion requires externally managed services and remains unverified;
+- raw TCP and Onion are not production-secure transports;
+- the mutual-TLS profile is project-specific and has limited independent-peer
+  interoperability.
+
+The library deliberately does not include an actor runtime, scheduler, VM,
+persistence layer, reconnect recovery system, or production distributed GC
+collector for arbitrary independent runtimes.
+
+## License & acknowledgements
+
+The package declares the **Apache-2.0** license in
+[`nimocapn.nimble`](nimocapn.nimble). The project builds on and tests against:
+
+- [OCapN specifications](https://github.com/ocapn/ocapn);
+- [Syrup specification](https://github.com/ocapn/syrup);
+- [Spritely Goblins](https://gitlab.com/spritely/goblins);
+- [Glowcap](https://github.com/ocapn/glowcap).
+
+This project is an independent Nim implementation and does not depend on
+Goblins, Glowcap, or an actor VM at runtime.
