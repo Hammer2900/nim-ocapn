@@ -97,6 +97,12 @@ operation, not locator-to-identity authentication. The official draft
 specifications are pinned inputs, but remain draft documents rather than a
 stable OCapN release.
 
+The public API contract is intentionally separate from protocol compliance:
+`import nimocapn` exposes the supported Node operations, while mutable Session,
+manager, handoff, and reference-table fields remain experimental. The default
+Node profile uses a fresh CapTP key per Session; exact peer checks pin that
+ephemeral session key, not the durable Node identity.
+
 Sources: [`CapTP Specification.md`](../../ocapn/draft-specifications/CapTP%20Specification.md),
 [`Locators.md`](../../ocapn/draft-specifications/Locators.md),
 [`Netlayers.md`](../../ocapn/draft-specifications/Netlayers.md).

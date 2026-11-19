@@ -97,9 +97,9 @@ type
   Node* = ref object
     manager*: TcpSessionManager
     handoffs*: HandoffManager
-    identity*: NodeIdentity
-    verificationPolicy*: PeerVerificationPolicy
-    sessionIdentityMode*: SessionIdentityMode
+    identity: NodeIdentity
+    verificationPolicy: PeerVerificationPolicy
+    sessionIdentityMode: SessionIdentityMode
     publications: Table[string, Behavior]
     typedPublications: Table[string, TypedBehavior]
     handoffEnliveners: seq[string]
@@ -113,7 +113,13 @@ type
     onionConfig: OnionNetlayerConfig
     diagnosticSink: DiagnosticSink
 
-export identity, locators
+export IdentityError, TransportAuthEvidence, TransportEvidenceVerifier,
+  PeerVerificationMode, SessionIdentityMode, PeerVerificationPolicy, NodeIdentity,
+  testingOnlyPeerPolicy, exactPeerPolicy, authenticatedNetlayerPolicy,
+  newEphemeralIdentity, loadIdentity, createIdentity, loadOrCreateIdentity,
+  writeIdentity
+export PeerLocator, SturdyRef, newPeerLocator, samePeer, peerSyrup, sturdySyrup,
+  peerLocator, sturdyRef, peerUri, sturdyUri, parsePeerUri, parseSturdyUri
 export DiagnosticEvent, DiagnosticSink, DiagnosticEventKind, DiagnosticErrorCategory
 export SessionLimits, SessionStats, SessionError, PromiseTimeoutError
 export HandoffLimits

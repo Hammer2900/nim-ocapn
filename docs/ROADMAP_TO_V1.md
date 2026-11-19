@@ -273,3 +273,14 @@ Gift replay protection remains lifecycle-bounded rather than size-bounded:
 redeemed tombstones are retained until the owning GiftTable is cleared. No
 automatic eviction or TTL was added because the current protocol profile does
 not provide a safe expiry proof.
+
+### P11 status
+
+The supported facade and authentication contract are documented in
+`docs/API_STABILITY.md`. `Node` no longer exposes direct mutation of its
+identity, verification policy, or session identity mode; configuration remains
+through `NodeConfig`. Low-level Session, manager, handoff, and reference-table
+fields remain experimental for beta compatibility. Connection methods now
+explicitly distinguish durable Node identity, ephemeral session keys, exact
+current-session pins, and project-specific TLS evidence. No automatic downgrade
+is permitted.

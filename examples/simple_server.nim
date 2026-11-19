@@ -1,7 +1,7 @@
 import std/[net, os, strutils]
 when defined(posix):
   import std/posix
-import ../src/[api, syrup]
+import ../src/[nimocapn, syrup]
 
 let port = Port(if paramCount() > 0: parseInt(paramStr(1)) else: 0)
 let identityPath = getEnv("NIM_OCAPN_IDENTITY", "simple-server.identity")

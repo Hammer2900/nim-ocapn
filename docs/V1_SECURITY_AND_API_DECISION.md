@@ -118,13 +118,14 @@ authentication. No implementation change is justified in this batch.
 
 The intended application surface is the `nimocapn` facade (`src/nimocapn.nim`)
 and the Node operations in `src/api.nim`: `NodeConfig`, `newNode`, identity
-loading, `connectUsing`, `connectVerified`, `bootstrap`, capability calls,
-bounded waits, diagnostics, `stats`, and `close`.
+loading, `connectUsing`, `connectVerified`, `connectMutualTls`, `bootstrap`,
+capability calls, bounded waits, diagnostics, `stats`, and `close`. The exact
+authentication contract is recorded in `docs/API_STABILITY.md`.
 
 The following exported state is not suitable for a long-term compatibility
 promise:
 
-- `Node.manager`, `Node.handoffs`, `Node.identity`, and other mutable fields;
+- `Node.manager`, `Node.handoffs`, and other low-level mutable fields;
 - `RemoteCapability.session` and `.reference`;
 - `RemotePromise.session`, `.reference`, and `.promise`;
 - direct `Session` fields including `references`, `pending`, `answers`, and
@@ -133,8 +134,10 @@ promise:
   transports.
 
 These fields can bypass ownership, reference accounting, policy checks, and
-resource limits. They remain available for existing protocol tests and unusual
-integrations; hiding them now would be a breaking change.
+resource limits. `Node.identity`, `Node.verificationPolicy`, and
+`Node.sessionIdentityMode` are now private; manager/handoff and Session fields
+remain available for existing protocol tests and unusual integrations because
+hiding them would be a larger breaking change.
 
 ### Minimal pre-v1 proposal
 

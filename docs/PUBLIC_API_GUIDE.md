@@ -88,3 +88,6 @@ operations should be treated as stable. Direct mutable fields on `Node`,
 `Session`, `RemoteCapability`, and `RemotePromise`, plus direct reference-table
 or handoff-manager access, are experimental and may be hidden or changed
 before v1. They can bypass ownership and lifecycle invariants.
+
+See [API_STABILITY.md](API_STABILITY.md) for the frozen surface and the exact
+authentication contract of each connection method.

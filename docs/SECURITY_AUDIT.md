@@ -5,7 +5,7 @@
 | ID | Finding | Severity | Evidence / consequence | Required action |
 |---|---|---|---|---|
 | S1 | TCP testing transport is plaintext and unauthenticated as a channel | High for production | `src/transport.nim`, `src/server.nim`; an attacker can observe, inject, or terminate traffic | Keep it testing-only; define and test an authenticated production netlayer |
-| S2 | TCP/Onion channel is not authenticated despite durable CapTP identity | High for authorization | `src/identity.nim`, `src/server.nim`, `src/api.nim`, and `src/handoff.nim` use the durable seed for every Node Session; raw TCP/Onion channel security remains absent | Keep TCP/Onion testing-only; use the explicit mutual-TLS profile where its trust anchors are configured |
+| S2 | TCP/Onion channel is not authenticated despite durable Node identity | High for authorization | `src/server.nim`, `src/api.nim`, and `src/handoff.nim` use fresh per-session keys by default; raw TCP/Onion channel security and durable Node-to-session binding remain absent | Keep TCP/Onion testing-only; use the explicit mutual-TLS profile where its trust anchors are configured |
 | S3 | Onion Service ID is not cryptographically bound to CapTP public key | High for peer authorization | Strict Sessions now compare the signed advertised locator and an external expected CapTP key, but `src/onion.nim` cannot prove that the Tor Service ID owns that key | Keep Onion `authenticated=false`; add a normative/authenticated binding mechanism |
 | S8 | No official OCapN authenticated netlayer is implemented | High for production interoperability | `src/tls_transport.nim` supplies real mutual-TLS evidence, but it is a project-specific profile and not an official OCapN netlayer | Keep the TLS profile explicitly project-specific; obtain an official profile before claiming OCapN production-netlayer interoperability |
 | S9 | Project TLS profile is not an official OCapN netlayer | Medium | `src/tls_transport.nim` requires CA, certificate fingerprint, and CapTP-key mapping; independent peers do not automatically interoperate | Keep the profile explicit and separately documented |
@@ -18,8 +18,9 @@
 
 - `src/identity.nim` provides versioned, checksummed, `0600` durable storage,
   explicit replacement, and lock-based creation.
-- A Node-provided identity is now the signing key for accepted, outbound, and
-  handoff Sessions; restart and reconnect preserve the wire public key.
+- A Node-provided identity persists as the durable Node trust anchor/public
+  identity; default accepted, outbound, reconnect, and handoff Sessions use
+  fresh per-session signing keys.
 - Strict Sessions independently verify the expected peer key and the signed
   acceptable-location before setting `peerVerified`; failures close the
   session before capabilities are exposed.
@@ -28,9 +29,9 @@
   configured fingerprint-to-key mapping.
 - Authenticated policy rejects missing, unknown, downgraded, or mismatched
   transport evidence; it does not trust `peerAuthenticated()` alone.
-- `PeerVerificationPolicy` supports exact expected keys and fail-closed
+- `PeerVerificationPolicy` supports exact expected session keys and fail-closed
   authenticated-netlayer policy. `Node.connectVerified` exposes the exact-key
-  path without changing CapTP wire records.
+  path without changing CapTP wire records; reconnect requires a new pin.
 - Verification is session-local and occurs before the session is marked open;
   rejected sessions clear pending state and do not publish capabilities.
 
