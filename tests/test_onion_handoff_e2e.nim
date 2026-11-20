@@ -1,5 +1,7 @@
 import std/[monotimes, net, os, strutils, unittest, times]
-import ../src/[gifts, handoff, locators, onion, promises, references, session, syrup, transport]
+import ../src/[crypto, gifts, handoff, identity, locators, onion, promises, references, session, syrup, transport]
+import ../src/api as api
+import ../src/session as sessionApi
 
 type
   OnionNode = ref object
@@ -10,6 +12,9 @@ type
     gifts: GiftTable
     accepted: seq[Session]
     receipts: seq[HandoffReceipt]
+    identity: NodeIdentity
+    protected: bool
+    trustedClientKeys: seq[string]
 
 proc serviceEnv(index: char): string =
   getEnv("NIM_OCAPN_ONION_" & $index)
@@ -20,6 +25,18 @@ proc portEnv(index: char; fallback: int): Port =
   Port(parseInt(value))
 
 proc traceEnabled(): bool = getEnv("NIM_OCAPN_ONION_TRACE") == "1"
+
+proc protectedOnly(): bool = getEnv("NIM_OCAPN_ONION_PROTECTED_ONLY") == "1"
+
+proc torConfig(authenticateServer = false): OnionNetlayerConfig =
+  result = defaultOnionNetlayerConfig()
+  result.authenticateServer = authenticateServer
+  if getEnv("NIM_OCAPN_TOR_SOCKS").len > 0:
+    result.socksHost = getEnv("NIM_OCAPN_TOR_SOCKS")
+  if getEnv("NIM_OCAPN_TOR_SOCKS_PORT").len > 0:
+    result.socksPort = Port(parseInt(getEnv("NIM_OCAPN_TOR_SOCKS_PORT")))
+  if getEnv("NIM_OCAPN_ONION_SERVICE_PORT").len > 0:
+    result.servicePort = Port(parseInt(getEnv("NIM_OCAPN_ONION_SERVICE_PORT")))
 
 proc traceEvent(event: TraceEvent) =
   if not traceEnabled(): return
@@ -33,7 +50,7 @@ proc attachTrace(node: OnionNode; session: Session) =
   session.setTraceSink(node.name, traceEvent)
 
 proc newOnionNode(name, service: string; localPort: Port): OnionNode =
-  let layer = newOnionNetlayer()
+  let layer = newOnionNetlayer(torConfig())
   let peer = newPeerLocator("onion", service)
   result = OnionNode(name: name, peer: peer, listener: layer.listen(localPort = localPort,
     advertised = peer), handoffs: newHandoffManager(), gifts: newGiftTable(),
@@ -46,6 +63,32 @@ proc publishOrigin(session: Session) =
       text("Hello, " & args[0].data)
     else:
       raise newException(SessionError, "origin expects one string argument"))
+
+proc publishProtected(session: Session) =
+  discard session.publishProtectedObject("protected", proc(args: seq[SyrupValue]): SyrupValue =
+    if args.len == 1 and args[0].kind == skString:
+      text("Protected hello, " & args[0].data)
+    elif args.len == 2 and args[0].kind == skSymbol and args[0].data == "greet" and
+        args[1].kind == skString:
+      text("Protected hello, " & args[1].data)
+    else:
+      raise newException(SessionError, "protected expects one string argument"))
+
+proc newProtectedOnionNode(name, service: string; localPort: Port;
+                           identity: NodeIdentity; trustedClientKeys: seq[string] = @[]): OnionNode =
+  let layer = newOnionNetlayer(torConfig())
+  let peer = newPeerLocator("onion", service)
+  result = OnionNode(name: name, peer: peer, listener: layer.listen(localPort = localPort,
+    advertised = peer), handoffs: newHandoffManager(), gifts: newGiftTable(),
+    accepted: @[], receipts: @[], identity: identity, protected: true,
+    trustedClientKeys: trustedClientKeys)
+  result.handoffs.setTraceSink(name, traceEvent)
+
+proc protectedAuthSession(node: OnionNode; session: Session) =
+  if not node.protected or node.trustedClientKeys.len == 0: return
+  discard session.enableClientAuthentication(node.trustedClientKeys,
+    node.peer.designator, onAuthenticated = proc(authorized: Session) =
+      authorized.publishProtected())
 
 proc acceptSession(node: OnionNode; seed: char; origin = false): Session =
   let started = getMonoTime()
@@ -61,6 +104,7 @@ proc acceptSession(node: OnionNode; seed: char; origin = false): Session =
   result.ownsGifts = false
   node.attachTrace(result)
   if origin: result.publishOrigin()
+  node.protectedAuthSession(result)
   node.accepted.add(result)
 
 proc acceptPending(node: OnionNode) =
@@ -74,10 +118,12 @@ proc acceptPending(node: OnionNode) =
   session.ownsGifts = false
   node.attachTrace(session)
   session.publishOrigin()
+  node.protectedAuthSession(session)
   node.accepted.add(session)
 
-proc connectTo(node: OnionNode; seed: char; origin = false): tuple[client, server: Session] =
-  let layer = newOnionNetlayer()
+proc connectTo(node: OnionNode; seed: char; origin = false;
+              authenticated = false): tuple[client, server: Session] =
+  let layer = newOnionNetlayer(torConfig(authenticated))
   let started = getMonoTime()
   if traceEnabled():
     echo "[TRACE] dial -> ", node.name, " listenerFd=", int(node.listener.socketHandle()),
@@ -86,10 +132,37 @@ proc connectTo(node: OnionNode; seed: char; origin = false): tuple[client, serve
   if traceEnabled():
     echo "[TRACE] dial <- ", node.name, " clientFd=", int(clientTransport.socketHandle()),
       " elapsedMs=", (getMonoTime() - started).inMilliseconds
-  let client = newSession(clientTransport, repeat(seed, 32), node.peer.peerUri())
+  let clientPolicy = if authenticated: authenticatedOnionPolicy(node.peer)
+                     else: testingOnlyPeerPolicy
+  let client = newSession(clientTransport, repeat(seed, 32), node.peer.peerUri(),
+    verificationPolicy = clientPolicy)
+  client.setExpectedPeer(node.peer, authenticated)
   node.attachTrace(client)
   client.remotePeer = node.peer
   let server = node.acceptSession(char(ord(seed) + 10), origin)
+  (client, server)
+
+proc connectNodes(source, target: OnionNode; seed: char; origin = false;
+                  authenticated = false): tuple[client, server: Session] =
+  let layer = newOnionNetlayer(torConfig(authenticated))
+  let started = getMonoTime()
+  if traceEnabled():
+    echo "[TRACE] dial ", source.name, " -> ", target.name,
+      " listenerFd=", int(target.listener.socketHandle()),
+      " port=", $target.listener.localPort()
+  let clientTransport = layer.dial(target.peer)
+  if traceEnabled():
+    echo "[TRACE] dial ", source.name, " <- ", target.name,
+      " clientFd=", int(clientTransport.socketHandle()),
+      " elapsedMs=", (getMonoTime() - started).inMilliseconds
+  let clientPolicy = if authenticated: authenticatedOnionPolicy(target.peer)
+                     else: testingOnlyPeerPolicy
+  let client = newSession(clientTransport, repeat(seed, 32), target.peer.peerUri(),
+    verificationPolicy = clientPolicy)
+  client.setExpectedPeer(target.peer, authenticated)
+  source.attachTrace(client)
+  client.remotePeer = target.peer
+  let server = target.acceptSession(char(ord(seed) + 10), origin)
   (client, server)
 
 proc installReceiver(node: OnionNode; server: Session): CapabilityRef =
@@ -249,7 +322,7 @@ proc runChain(services: seq[string]) =
   if aServer.state != ssOpen or bToA.state != ssOpen:
     raise newException(SessionError, "Onion A-B handshake timeout")
 
-  let fetched = bToA.fetch("origin")
+  let fetched = sessionApi.fetch(bToA, "origin")
   if not pumpAll(nodes, sessions, @[], 10000, proc(): bool = fetched.settled()):
     raise newException(SessionError, "Onion origin fetch timeout")
   if fetched.state != psFulfilled:
@@ -275,7 +348,7 @@ proc runChain(services: seq[string]) =
     traceStage("give", sourceName, destinationName, "creating signed handoff-give")
     let give = nodes[index].handoffs.handoffArgument(sourceSession, capability, downstream)
     traceStage("deposit", sourceName, destinationName, "gift=" & giveId(give))
-    let register = downstream.call(registerTarget, "register", [give])
+    let register = sessionApi.call(downstream, registerTarget, "register", [give])
     traceStage("withdraw", sourceName, destinationName, "waiting for handoff-receive")
     managers.add(nodes[index + 1].handoffs)
     let current = nodes[index + 1]
@@ -292,7 +365,7 @@ proc runChain(services: seq[string]) =
       "gift=" & giveId(give) & " pendingPromises=" & $receipt.session.stats().pendingPromises)
     allSessions.add(sourceSession)
 
-  let answer = sourceSession.call(capability, "greet", [text("world")])
+  let answer = sessionApi.call(sourceSession, capability, "greet", [text("world")])
   if not pumpAll(nodes, allSessions, managers, 20000, proc(): bool = answer.settled()):
     raise newException(SessionError, "Onion final call timeout")
   if answer.state != psFulfilled or answer.value.isNil or answer.value.data != "Hello, world":
@@ -314,7 +387,7 @@ proc runConcurrent(services: seq[string]) =
   var sessions = @[aServer, bToA]
   discard pumpAll(nodes, sessions, @[], 10000,
     proc(): bool = aServer.state == ssOpen and bToA.state == ssOpen)
-  let fetched = bToA.fetch("origin")
+  let fetched = sessionApi.fetch(bToA, "origin")
   if not pumpAll(nodes, sessions, @[], 10000, proc(): bool = fetched.settled()):
     raise newException(SessionError, "concurrent Onion fetch timeout")
   if fetched.state != psFulfilled:
@@ -336,8 +409,8 @@ proc runConcurrent(services: seq[string]) =
   let giveC = nodes[1].handoffs.handoffArgument(bToA, capability, cLink.client)
   traceStage("give", "B", "D", "creating concurrent signed handoff-give")
   let giveD = nodes[1].handoffs.handoffArgument(bToA, capability, dLink.client)
-  let registerC = cLink.client.call(cRegister, "register", [giveC])
-  let registerD = dLink.client.call(dRegister, "register", [giveD])
+  let registerC = sessionApi.call(cLink.client, cRegister, "register", [giveC])
+  let registerD = sessionApi.call(dLink.client, dRegister, "register", [giveD])
   traceStage("withdraw", "B", "C", "gift=" & giveId(giveC))
   traceStage("withdraw", "B", "D", "gift=" & giveId(giveD))
   let managers = @[nodes[2].handoffs, nodes[3].handoffs]
@@ -351,8 +424,8 @@ proc runConcurrent(services: seq[string]) =
   check cReceipt.promise.state == psFulfilled
   check dReceipt.promise.state == psFulfilled
   check cReceipt.session.localPublicKey != dReceipt.session.localPublicKey
-  let cAnswer = cReceipt.session.call(cReceipt.promise.value.descriptor(), "greet", [text("world")])
-  let dAnswer = dReceipt.session.call(dReceipt.promise.value.descriptor(), "greet", [text("world")])
+  let cAnswer = sessionApi.call(cReceipt.session, cReceipt.promise.value.descriptor(), "greet", [text("world")])
+  let dAnswer = sessionApi.call(dReceipt.session, dReceipt.promise.value.descriptor(), "greet", [text("world")])
   if not pumpAll(nodes, sessions, managers, 20000,
       proc(): bool = cAnswer.settled() and dAnswer.settled()):
     raise newException(SessionError, "concurrent Onion calls timeout")
@@ -364,24 +437,139 @@ proc runConcurrent(services: seq[string]) =
   check nodes[2].handoffs.stats().pendingReceives == 0
   check nodes[3].handoffs.stats().pendingReceives == 0
 
+proc installProtectedReceiver(node: OnionNode; server: Session;
+                             withdrawn: ref bool): CapabilityRef =
+  result = server.publishActor("register-protected", proc(actor: Session;
+      args: seq[SyrupValue]): SyrupValue =
+    if args.len != 2 or args[0].kind != skSymbol or args[0].data != "register":
+      raise newException(SessionError, "protected register expects one gift")
+    let answer = actor.deferAnswer()
+    let receipt = node.handoffs.startHandoffReceiver(args[1], actor)
+    node.receipts.add(receipt)
+    receipt.promise.onSettle(proc(done: Promise) =
+      if done.state == psBroken:
+        actor.breakAnswer(answer, done.reason)
+      else:
+        withdrawn[] = true
+        actor.fulfillAnswer(answer, text("protected withdrawal complete")))
+    list())
+
+proc configureProtectedAuxiliary(node, owner: OnionNode) =
+  node.handoffs = newHandoffManager(identity = node.identity,
+    verificationPolicy = authenticatedOnionPolicy(owner.peer))
+  node.handoffs.setTraceSink(node.name, traceEvent)
+  node.handoffs.setHandoffSessionOpener(proc(peer: PeerLocator): Session =
+    let layer = newOnionNetlayer(torConfig(true))
+    let transport = layer.dial(peer)
+    let session = newSession(transport, "", peer.peerUri(),
+      verificationPolicy = authenticatedOnionPolicy(peer))
+    session.remotePeer = peer
+    session.setExpectedPeer(peer, true)
+    session)
+  node.handoffs.setHandoffSessionPreparer(proc(session: Session): bool =
+    for peerSession in owner.accepted:
+      if peerSession.state == ssOpen and
+          peerSession.remotePublicKey == session.localPublicKey:
+        try:
+          let authenticated = api.authenticateClient(session, node.identity,
+            pumpPeer = peerSession, maxPumps = 10_000)
+          if traceEnabled(): echo "[TRACE] protected auxiliary authenticated=", authenticated
+          return authenticated
+        except CatchableError as error:
+          if traceEnabled(): echo "[TRACE] protected auxiliary auth error: ", error.msg
+          return false
+    if traceEnabled(): echo "[TRACE] protected auxiliary peer session not ready"
+    false)
+
+proc runProtectedChain(services: seq[string]) =
+  if services.len < 3: return
+  let aIdentity = newEphemeralIdentity(repeat('a', 32))
+  let bIdentity = newEphemeralIdentity(repeat('b', 32))
+  let cIdentity = newEphemeralIdentity(repeat('c', 32))
+  let trusted = @[bIdentity.publicKey, cIdentity.publicKey]
+  var nodes: seq[OnionNode]
+  nodes.add(newProtectedOnionNode("A", services[0], portEnv('A', 9145), aIdentity, trusted))
+  nodes.add(newProtectedOnionNode("B", services[1], portEnv('B', 9146), bIdentity))
+  nodes.add(newProtectedOnionNode("C", services[2], portEnv('C', 9147), cIdentity))
+  configureProtectedAuxiliary(nodes[2], nodes[0])
+  defer:
+    for node in nodes: node.closeNode()
+
+  let first = connectNodes(nodes[1], nodes[0], 'b', false, true)
+  var sessions = @[first.client, first.server]
+  if not pumpAll(nodes, sessions, @[], 30_000,
+      proc(): bool = first.client.state == ssOpen and first.server.state == ssOpen):
+    raise newException(SessionError, "protected Onion A-B handshake timeout")
+  if not api.authenticateClient(first.client, bIdentity, pumpPeer = first.server):
+    raise newException(SessionError, "protected Onion B authentication failed")
+  let fetched = api.fetch(first.client, "protected")
+  if not pumpAll(nodes, sessions, @[], 20_000, proc(): bool = fetched.settled()):
+    raise newException(SessionError, "protected Onion fetch timeout")
+  if fetched.state != psFulfilled:
+    raise newException(SessionError, "protected Onion fetch rejected: " & fetched.reason)
+
+  let link = connectNodes(nodes[1], nodes[2], 'c', false)
+  sessions.add(link.client)
+  sessions.add(link.server)
+  if not pumpAll(nodes, sessions, @[], 30_000,
+      proc(): bool = link.client.state == ssOpen and link.server.state == ssOpen):
+    raise newException(SessionError, "protected Onion B-C handshake timeout")
+  var withdrawn = new(bool)
+  let register = installProtectedReceiver(nodes[2], link.server, withdrawn)
+  let bHandoffs = newHandoffManager()
+  let give = bHandoffs.handoffArgument(first.client, fetched.value.descriptor(), link.client)
+  let registerCall = sessionApi.call(link.client, register, "register", [give])
+  var managers = @[nodes[2].handoffs]
+  if not pumpAll(nodes, sessions, managers, 30_000,
+      proc(): bool = registerCall.settled() and withdrawn[]):
+    raise newException(SessionError, "protected Onion withdrawal timeout")
+  if registerCall.state != psFulfilled:
+    raise newException(SessionError, "protected Onion register rejected: " & registerCall.reason)
+  first.client.close("protected B disconnected")
+  link.client.close("protected B disconnected")
+  let protectedCall = sessionApi.call(nodes[2].receipts[^1].session,
+    nodes[2].receipts[^1].promise.value.descriptor(), "greet", [text("world")])
+  if not pumpAll(nodes, sessions, managers, 30_000,
+      proc(): bool = protectedCall.settled()):
+    raise newException(SessionError, "protected Onion invocation timeout after B disconnect")
+  if protectedCall.state != psFulfilled or protectedCall.value.kind != skString or
+      protectedCall.value.data != "Protected hello, world":
+    raise newException(SessionError, "protected Onion invocation rejected: " &
+      (if protectedCall.state == psBroken: protectedCall.reason else: "unexpected result"))
+  nodes[2].receipts[^1].session.release(
+    nodes[2].receipts[^1].promise.value.descriptor())
+  check nodes[0].accepted.len >= 2
+  check nodes[2].handoffs.stats().pendingReceives == 0
+  echo "[PASS] protected Onion A/B/C handoff with independent client authentication"
+
 suite "OCapN Onion handoff integration":
   test "three-node Onion handoff A to B to C":
+    if not protectedOnly():
+      let services = requireServices(3)
+      if services.len == 0:
+        skip()
+      else:
+        runChain(services)
+
+  test "four-node Onion handoff A to B to C to D":
+    if not protectedOnly():
+      let services = requireServices(4)
+      if services.len == 0:
+        skip()
+      else:
+        runChain(services)
+
+  test "concurrent Onion handoff keeps receiver identities independent":
+    if not protectedOnly():
+      let services = requireServices(4)
+      if services.len == 0:
+        skip()
+      else:
+        runConcurrent(services)
+
+  test "protected Onion handoff authenticates C before withdrawal":
     let services = requireServices(3)
     if services.len == 0:
       skip()
     else:
-      runChain(services)
-
-  test "four-node Onion handoff A to B to C to D":
-    let services = requireServices(4)
-    if services.len == 0:
-      skip()
-    else:
-      runChain(services)
-
-  test "concurrent Onion handoff keeps receiver identities independent":
-    let services = requireServices(4)
-    if services.len == 0:
-      skip()
-    else:
-      runConcurrent(services)
+      runProtectedChain(services)

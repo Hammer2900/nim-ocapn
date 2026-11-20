@@ -581,7 +581,13 @@ proc mapGiftCapability(session: Session; value: SyrupValue; owner: pointer): Syr
         importObject(reference.position).descriptor()
       else:
         exportRef(reference.position).descriptor()
-  let proxy = if reference.kind == rkExport:
+  let proxy = if reference.kind == rkExport and
+      sourceSession.protectedExports.getOrDefault(reference.position):
+      let behavior = sourceSession.references.exportBehavior(reference.position)
+      if behavior.isNil:
+        raise newException(SessionError, "cannot proxy an unknown protected capability")
+      session.exportOwned(behavior, eoForwardedProxy)
+    elif reference.kind == rkExport:
       session.exportLocalCapabilityProxy(sourceSession, reference)
     else:
       session.exportCapabilityProxy(sourceSession, reference)

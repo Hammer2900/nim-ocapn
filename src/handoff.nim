@@ -14,6 +14,8 @@ type
     promise*: Promise
     session*: Session
     manager*: HandoffManager
+  HandoffSessionOpener* = proc(peer: PeerLocator): Session {.closure.}
+  HandoffSessionPreparer* = proc(session: Session): bool {.closure.}
   PendingEnliven = ref object
     source: Session
     answer: AnswerContext
@@ -28,6 +30,7 @@ type
     sent: bool
     withdrawal: Promise
     result: Promise
+    prepared: bool
   HandoffManager* = ref object
     outboundSessions*: seq[Session]
     pendingEnliven: seq[PendingEnliven]
@@ -47,12 +50,16 @@ type
     traceSequence: int64
     diagnosticSink: DiagnosticSink
     diagnosticNodeId: string
+    sessionOpener: HandoffSessionOpener
+    receiverSessionPreparer: HandoffSessionPreparer
 
 proc newHandoffManager*(limits = HandoffLimits(maxPending: 256);
                         sessionLimits = defaultSessionLimits();
                         verificationPolicy = testingOnlyPeerPolicy;
                         identity: NodeIdentity = nil;
-                        sessionIdentityMode = simPerSession): HandoffManager =
+                        sessionIdentityMode = simPerSession;
+                        sessionOpener: HandoffSessionOpener = nil;
+                        receiverSessionPreparer: HandoffSessionPreparer = nil): HandoffManager =
   if limits.maxPending < 0:
     raise newException(SessionError, "handoff limits must not be negative")
   validatePolicy(verificationPolicy)
@@ -64,7 +71,18 @@ proc newHandoffManager*(limits = HandoffLimits(maxPending: 256);
     receiverSessions: @[], pendingReceives: @[], limits: limits,
     sessionLimits: sessionLimits, verificationPolicy: verificationPolicy,
     identity: identity, sessionIdentityMode: sessionIdentityMode,
-    nextHandoffCounts: initTable[string, int64]())
+    nextHandoffCounts: initTable[string, int64](),
+    sessionOpener: sessionOpener, receiverSessionPreparer: receiverSessionPreparer)
+
+proc setHandoffSessionOpener*(manager: HandoffManager; opener: HandoffSessionOpener) =
+  if manager.isNil or manager.closed:
+    raise newException(SessionError, "handoff manager is closed")
+  manager.sessionOpener = opener
+
+proc setHandoffSessionPreparer*(manager: HandoffManager; preparer: HandoffSessionPreparer) =
+  if manager.isNil or manager.closed:
+    raise newException(SessionError, "handoff manager is closed")
+  manager.receiverSessionPreparer = preparer
 
 proc ensureOpen(manager: HandoffManager) =
   if manager.closed:
@@ -149,6 +167,11 @@ proc finishEnliven(manager: HandoffManager; item: PendingEnliven; promise: Promi
     item.source.breakAnswer(item.answer, error.msg)
 
 proc openHandoffSession(manager: HandoffManager; peer: PeerLocator): Session =
+  if not manager.sessionOpener.isNil:
+    result = manager.sessionOpener(peer)
+    if result.isNil:
+      raise newException(SessionError, "handoff session opener returned nil")
+    return manager.registerSession(result, peer)
   let seed = if manager.sessionIdentityMode == simLegacyDurable:
       manager.identity.sessionSeed()
     else:
@@ -365,6 +388,21 @@ proc pumpWork*(manager: HandoffManager; maxWork = 64): int =
       continue
     if item.session.state != ssOpen or item.signer.state == ssClosed:
       continue
+    if not item.sent and not item.prepared and not manager.receiverSessionPreparer.isNil:
+      try:
+        if not manager.receiverSessionPreparer(item.session):
+          item.result.breakPromise("handoff receiver session authentication failed")
+          item.session.close("handoff receiver session authentication failed")
+          item.sent = true
+          inc work
+          continue
+        item.prepared = true
+      except CatchableError as error:
+        item.result.breakPromise(error.msg)
+        item.session.close("handoff receiver session authentication failed")
+        item.sent = true
+        inc work
+        continue
     let sessionKey = item.session.sessionId()
     let handoffCount = manager.nextHandoffCounts.getOrDefault(sessionKey, 0)
     manager.nextHandoffCounts[sessionKey] = handoffCount + 1

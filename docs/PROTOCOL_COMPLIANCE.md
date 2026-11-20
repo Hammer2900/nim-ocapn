@@ -20,7 +20,7 @@ and limitation notes follow the table.
 | CP-04 | CapTP: `op:listen` modes 1/2/3 | `src/session.nim:notifyListener` | `tests/test_session.nim` listen matrix and invalid-mode vector | PARTIAL: local normative paths complete; external mode matrix unverified |
 | CP-05 | CapTP: abort/error lifecycle | `src/session.nim:close`, `src/server.nim` | disconnect/malformed tests | COMPLETE for tested paths |
 | GC-01 | CapTP: `op:gc-exports`/answers | `src/references.nim`, `src/session.nim` | GC/forwarding tests | PARTIAL for arbitrary distributed graphs |
-| HO-01 | CapTP: third-party handoff | `src/handoff.nim`, `src/gifts.nim` | 3/4-node and stress tests | PARTIAL |
+| HO-01 | CapTP: third-party handoff | `src/handoff.nim`, `src/gifts.nim` | 3/4-node, three-process and stress tests | PARTIAL |
 | LO-01 | Locators: peer/sturdyref Syrup | `src/locators.nim` | locator golden/negative and duplicate-hint vectors | PARTIAL: legacy bytes form remains accepted |
 | LO-02 | Locators: URI and equality | `src/locators.nim:peerUri`, `parse*Uri` | URI escaping, UTF-8, duplicate, empty-value, and fragment vectors | COMPLETE for tested grammar |
 | NL-01 | Netlayers: ordered bidirectional channel | `src/transport.nim`, `src/onion.nim` | TCP/Onion pipeline tests | PARTIAL: security boundary |
@@ -49,7 +49,7 @@ and limitation notes follow the table.
 | `op:listen` modes 1/2/3 | `session.nim` listener lifecycle | PARTIAL | direct/chained/break/duplicate/disconnect local matrix; Glowcap per-mode external tests unavailable |
 | Promise resolution, break, pipelining | `promises.nim`, `session.nim`, `api.nim` | COMPLETE for tested profile | chained and forwarded promise regressions |
 | Session-local import/export descriptors | `references.nim`, `session.nim` | COMPLETE for tested paths | isolation, remap, proxy and GC tests |
-| Third-party handoff | `handoff.nim`, `gifts.nim` | PARTIAL | 3/4-node, concurrent and 100-stress tests; formal all-peer/replay matrix remains |
+| Third-party handoff | `handoff.nim`, `gifts.nim` | PARTIAL | independent-process A→B→C, 3/4-node, concurrent and 100-stress tests; formal all-peer/replay matrix remains |
 | `op:gc-exports` / `op:gc-answers` | `session.nim`, `references.nim` | PARTIAL | duplicate/stale/forwarding tests; arbitrary distributed-GC proof absent |
 | `op:abort` and disconnect cleanup | `session.nim`, `server.nim` | COMPLETE for tested profile | TCP matrix and malformed-message tests |
 | Bootstrap and sturdyref enlivening | `api.nim`, `handoff.nim` | PARTIAL | TCP/Glowcap paths work; no authenticated production locator binding |

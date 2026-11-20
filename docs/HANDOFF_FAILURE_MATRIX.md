@@ -4,6 +4,18 @@ Profile: current CapTP handoff implementation, with one-time gift redemption.
 Tests run through `nimble handoffFailureTest`; existing TCP and TLS E2E remain
 separate regressions.
 
+The independent-process happy path is covered by
+`nimble threeNodeHandoffTest`. It runs A, B, and C as separate Nim processes:
+B transfers a signed gift for A's capability to C, then closes both of its
+sessions; C withdraws through its auxiliary Session to A and invokes the
+capability. This verifies that the downstream reference does not depend on B's
+continued Session lifetime.
+
+The same command runs bounded checkpoint injection. Checkpoints are held by
+control files, so the runner can use either a graceful stop or SIGTERM without
+sleep-based races. It records pre/post cleanup `active`, `pending`, import,
+export, gift, and handoff counters for surviving processes.
+
 | Scenario | Expected behavior | Protection | Test |
 |---|---|---|---|
 | Before gift creation | No pending gift state | No table entry is created | `disconnect before gift creation` |
@@ -22,6 +34,14 @@ separate regressions.
 | Wrong handoff identity | Reject before capability use | receiver-key and session checks | `receiver rejects a give...` |
 | Corrupt/unknown certificate | Break answer; close only affected session | descriptor/signature validation | `test_handoff.nim`, `test_session.nim` |
 | Repeated handoff count | Reject duplicate count | session-local count table | `test_session.nim` |
+| Three-process post-handoff disconnect | C remains able to invoke A after B closes | auxiliary Session remains owned by C's HandoffManager; no pending receive | `nimble threeNodeHandoffTest` |
+| Three-process before deposit | No gift is deposited; A/B/C cleanup is bounded | B stopped at `B_FETCHED0` | `threeNodeHandoffTest` |
+| Three-process after deposit | Gift exists until A cleanup; no withdrawal occurs | B stopped at `B_DEPOSITED0` | `threeNodeHandoffTest` |
+| Three-process during withdrawal | Gift/auxiliary Session is cleaned after C stop | C stopped at `C_WITHDRAWAL_STARTED` | `threeNodeHandoffTest` |
+| Three-process after withdrawal | Capability is not invoked if C terminates | C stopped at `C_WITHDRAWAL_DONE` | `threeNodeHandoffTest` |
+| Three-process during invocation | A or C termination breaks only the dependent operation | `C_INVOCATION_STARTED` | `threeNodeHandoffTest` |
+| Three-process after invocation before release | Late cleanup does not revive the capability | C stopped at `C_INVOCATION_DONE` | `threeNodeHandoffTest` |
+| Graceful vs process termination | Both paths finish without orphaned peers | alternating control-file stop and SIGTERM | `threeNodeHandoffTest` |
 
 The fault transport is test-only. It controls delay, duplication and close
 without sleeps or kernel-buffer assumptions. Remote call delivery is not made
@@ -31,3 +51,19 @@ their protocol semantics.
 Known boundary: replay tombstones live for the lifetime of the `GiftTable` and
 are cleared when its owner is closed. Durable anti-replay across process
 restarts is not implemented.
+
+Protected three-node handoff is covered by the TLS-backed fixture in
+`nimble threeNodeHandoffTest`: B and C use separate durable Ed25519 identities,
+C authenticates its fresh auxiliary Session before withdrawal, B disconnects,
+and C completes invocation. Unknown and unauthenticated C paths are rejected
+without consuming the gift. This is a project-specific mutual-TLS profile;
+the fixture does not claim a universal authenticated OCapN netlayer.
+
+The real Tor v3 runner exercises the same protected A/B/C order over three
+Onion Services. The final run reached service bootstrap in 10.8s, client
+bootstrap in 4.8s, authenticated auxiliary withdrawal, B disconnect, C
+invocation, release, and cleanup; it completed with `PASS`. Earlier apparent
+timeouts were fixture defects: the topology connected a node to its own
+listener, asynchronous accepts omitted client-auth setup, and the test closed
+the wrong session. They were corrected in the fixture; no production timeout
+was relaxed and no unbounded wait remains.

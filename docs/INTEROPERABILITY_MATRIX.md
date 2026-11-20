@@ -78,6 +78,9 @@ source was changed. The reproducible runner is `nimble interopTest`.
 | Tor v3 client authorization access control | Nim ↔ Nim | external Tor `descriptor:x25519` credentials | PASS | Isolated runner passes two allowed clients, rejects wrong credential, and rejects revoked credential after service restart; no CapTP client identity binding |
 | Onion durable client proof and protected capability gate | Nim ↔ Nim | project-specific application profile over authenticated Onion | PASS | Real Tor runner plus client-auth vectors cover trusted/unknown keys, replay, expiry, concurrent Sessions, pipelining denial before auth, reconnect and cleanup; not universal netlayer interoperability |
 | Onion durable client identity binding | Nim ↔ Nim | project-specific CapTP authentication capability over authenticated Onion | PASS | Real runner verifies two trusted durable keys, fresh session binding, protected capability gating, unknown-key rejection, and cleanup; not independent-peer interoperability |
+| Three-node handoff A → B → C | Nim ↔ Nim | TCP testing-only, three independent processes | PASS | `nimble threeNodeHandoffTest`: A owns the capability, B deposits a signed gift and disconnects, C withdraws through its auxiliary Session and invokes A |
+| Three-process handoff failure injection | Nim ↔ Nim | TCP testing-only, checkpointed independent processes | PASS | `nimble threeNodeHandoffTest`: before/after deposit, withdrawal, invocation, graceful stop, SIGTERM, x10/x50 repetition and fresh-cluster reconnect |
+| Three-node handoff with Glowcap/Goblins | independent peer | external peer profile | UNVERIFIED | Available Glowcap/Goblins fixtures do not expose a reproducible Nim-originated third-party handoff driver |
 
 The previous recursive delivery-release defect is fixed in `src/session.nim`:
 resolver fulfillment values are retained by the promise and are not immediately
@@ -118,3 +121,15 @@ available isolated upstream modules. The fixture's in-process repeated-session
 path is UNSUPPORTED and its durable identity is UNVERIFIED for the reasons in
 the matrix. Missing unconfigured prerequisites report SKIP; configured startup
 or protocol failures report FAIL.
+
+The protected three-node handoff fixture is Nim-only and uses the existing
+project-specific mutual-TLS profile: A owns the protected export, B and C are
+independent processes, and C authenticates its own auxiliary Session before
+withdrawal. It is not cross-peer interoperability evidence.
+
+The isolated real Tor v3 run is `PASS` for Nim A/B/C protected handoff:
+service and client Tor bootstrap completed, B authenticated to A, C opened a
+separate authenticated auxiliary Session, withdrew the gift, continued the
+invocation after B disconnected, and released the capability. This remains
+Nim-only evidence for the project-specific Onion/TLS profile, not independent
+Glowcap/Goblins interoperability.

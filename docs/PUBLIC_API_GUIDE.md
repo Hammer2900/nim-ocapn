@@ -157,3 +157,7 @@ before v1. They can bypass ownership and lifecycle invariants.
 
 See [API_STABILITY.md](API_STABILITY.md) for the frozen surface and the exact
 authentication contract of each connection method.
+
+Protected handoff is explicit: an auxiliary Session must independently pass
+`authenticateClient` before a protected gift can be withdrawn. Authentication
+is Session-local and is never inherited from the intermediary Session.

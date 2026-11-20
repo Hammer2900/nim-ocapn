@@ -1,6 +1,12 @@
 import std/[base64, monotimes, net, os, sequtils, strutils, times, unittest]
 import ../src/[api, identity, locators, onion, promises, session, syrup, transport]
 
+let phaseStarted = getMonoTime()
+
+proc phase(tag: string) =
+  echo "[PHASE +" & $(getMonoTime() - phaseStarted).inMilliseconds & "ms] " & tag
+  stdout.flushFile()
+
 proc pump(sessions: openArray[Session]; transports: openArray[Transport];
          timeoutMs: int; done: proc(): bool {.closure.}): bool =
   let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
@@ -34,6 +40,7 @@ proc socksConfig(): OnionNetlayerConfig
 
 proc connectPair(layer: OnionNetlayer; listener: OnionListener; peer: PeerLocator;
                 tag: string): tuple[client, server: Session; transports: seq[Transport]] =
+  phase(tag & ": SOCKS5 CONNECT")
   var clientTransport: OnionTransport
   var lastError = ""
   for attempt in 0 ..< 30:
@@ -46,6 +53,7 @@ proc connectPair(layer: OnionNetlayer; listener: OnionListener; peer: PeerLocato
   if clientTransport.isNil:
     raise newException(OnionError, "Tor Onion service did not become reachable: " & lastError)
   let serverTransport = listener.accept()
+  phase(tag & ": accepted stream")
   let server = newSession(serverTransport, location = peer.peerUri())
   let client = newSession(clientTransport, location = "ocapn://client.onion",
     verificationPolicy = authenticatedOnionPolicy(peer))
@@ -59,9 +67,12 @@ proc connectPair(layer: OnionNetlayer; listener: OnionListener; peer: PeerLocato
       " server=" & $server.state & " client=" & $client.state &
       " clientAuth=" & $clientTransport.peerAuthenticated() &
       " clientEvidence=" & clientTransport.authenticationEvidence().transportIdentity)
+  phase(tag & ": CapTP handshake")
 
 proc exercise(client, server: Session; tag: string) =
+  phase(tag & ": client authentication")
   doAssert api.authenticateClient(client, envIdentity(), pumpPeer = server)
+  phase(tag & ": protected fetch and invocation")
   let fetched = api.fetch(client, "greeter")
   let call = client.callPipelined(fetched, "greet", [text(tag)])
   if not pump([client, server], @[client.transport, server.transport], 10000,
@@ -70,6 +81,7 @@ proc exercise(client, server: Session; tag: string) =
   if call.state != psFulfilled or call.value.kind != skString or
       call.value.data != "Hello, " & tag:
     raise newException(SessionError, "unexpected Onion response: " & tag)
+  phase(tag & ": invocation complete")
 
 proc runAuthenticationFailure(service: string) =
   let layer = newOnionNetlayer(socksConfig())
@@ -135,6 +147,7 @@ proc runRealOnionE2E(service: string) =
     check pair.server.state == ssClosed
 
   let replayPair = layer.connectPair(listener, peer, "challenge-replay")
+  phase("challenge replay")
   doAssert api.authenticateClient(replayPair.client, envIdentity(),
     pumpPeer = replayPair.server)
   var replayRejected = false
@@ -152,6 +165,7 @@ proc runRealOnionE2E(service: string) =
   var transports: seq[Transport]
   var calls: seq[Promise]
   for index in 0 ..< 2:
+    phase("concurrent client " & $index)
     let pair = layer.connectPair(listener, peer, "concurrent-" & $index)
     clients.add(pair.client)
     servers.add(pair.server)
@@ -173,6 +187,7 @@ proc runRealOnionE2E(service: string) =
     check call.value.data == "Hello, concurrent-" & $index
 
   let clientTransport = layer.dial(peer)
+  phase("wrong Onion policy")
   let serverTransport = listener.accept()
   let server = newSession(serverTransport, location = peer.peerUri())
   let wrongPeer = newPeerLocator("onion", if peer.designator[0] == 'a':
@@ -196,6 +211,7 @@ proc runRealOnionE2E(service: string) =
   server.close("wrong Onion policy cleanup")
 
   var unavailable = peer
+  phase("unavailable Onion service")
   unavailable.designator[0] = if unavailable.designator[0] == 'a': 'b' else: 'a'
   expect OnionError:
     discard layer.dial(unavailable)

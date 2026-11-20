@@ -28,7 +28,7 @@ task torTest, "Run the explicit Tor Onion integration test":
   exec "nim c -r --hints:off tests/test_onion_e2e.nim && nim c -r --hints:off tests/test_onion_handoff_e2e.nim"
 
 task onionE2eTest, "Run an isolated real Tor v3 Onion E2E test":
-  exec "python3 tests/test_onion_real_e2e.py"
+  exec "python3 tests/test_onion_real_e2e.py && nim c -r --hints:off tests/test_onion_handoff_e2e.nim"
 
 task stressTest, "Run bounded lifecycle and handoff stress tests":
   exec "nim c -r --hints:off tests/test_handoff_stress.nim"
@@ -50,6 +50,9 @@ task independentInteropTest, "Run the upstream OCapN suite against unmodified Go
 
 task advancedInteropTest, "Run bounded advanced scenarios against independent peers":
   exec "python3 tests/test_advanced_interop.py"
+
+task threeNodeHandoffTest, "Run three-process handoff, failure, GC and reconnect tests":
+  exec "python3 tests/test_three_node_handoff.py"
 
 task transportConformanceTest, "Run transport-neutral CapTP scenarios":
   exec "nim c -r --hints:off tests/test_transport_conformance.nim && python3 tests/test_tls_e2e.py && if [ -n \"$NIM_OCAPN_ONION_SERVICE\" ]; then nim c -r --hints:off tests/test_onion_e2e.nim; else echo 'Onion transport: SKIP (NIM_OCAPN_ONION_SERVICE is not set)'; fi"

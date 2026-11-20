@@ -122,3 +122,19 @@ role-separated domain data. The real Tor runner covers unknown durable keys,
 replay, wrong Onion policy, revoked credentials, repeated/concurrent Sessions
 and cleanup. This remains an application profile over ordinary CapTP, not a
 universal OCapN authenticated netlayer.
+
+## Protected three-node handoff
+
+The authenticated handoff path is Session-local. B's authentication is not
+copied to C: C proves its own durable Ed25519 identity on a fresh TLS
+auxiliary Session before `withdraw-gift`. Unknown and unauthenticated C
+attempts fail closed and do not redeem the protected gift. After withdrawal,
+the protected behavior is transferred into the auxiliary Session so C can
+continue after B closes. This is the tested project-specific profile; it does
+not authenticate arbitrary Onion clients or establish durable server identity.
+The real Tor v3 protected three-node run completed with `PASS`. C performed
+its own durable Ed25519 proof on a fresh A-session before withdrawal; B's
+authentication was not inherited. Unknown/unauthenticated paths remain
+fail-closed, and the post-withdrawal proxy is owned by the auxiliary Session,
+so B disconnect does not invalidate C's capability. The evidence is limited
+to separate Nim processes and the configured project-specific profile.

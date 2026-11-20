@@ -27,14 +27,20 @@ def run(command: list[str]) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
-def wait_for_bootstrap(process: subprocess.Popen[str], log: Path) -> bool:
-    deadline = time.monotonic() + 300
+def wait_for_bootstrap(process: subprocess.Popen[str], log: Path, label: str,
+                       timeout: float = 90.0) -> bool:
+    started = time.monotonic()
+    print(f"[TOR] {label}: waiting for bootstrap", flush=True)
+    deadline = started + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
             return False
         if "Bootstrapped 100%" in log.read_text(errors="replace"):
+            print(f"[TOR] {label}: bootstrap PASS in {time.monotonic() - started:.1f}s",
+                  flush=True)
             return True
         time.sleep(0.25)
+    print(f"[TOR] {label}: bootstrap TIMEOUT after {timeout:.0f}s", flush=True)
     return False
 
 
@@ -105,6 +111,20 @@ def start_client_tor(tor: str, root: Path, service: str, private_key: str):
     return process, output, socks_port
 
 
+def start_socks_tor(tor: str, root: Path):
+    data = root / "data"
+    data.mkdir(mode=0o700, parents=True)
+    socks_port = free_port()
+    torrc = root / "torrc"
+    torrc.write_text(
+        f"DataDirectory {data}\n"
+        f"SocksPort 127.0.0.1:{socks_port}\n"
+        "ClientOnly 1\nRunAsDaemon 0\nLog notice stdout\n"
+    )
+    process, output = start_tor(tor, torrc, root / "tor.log")
+    return process, output, socks_port
+
+
 def run_nim(binary: Path, service: str, socks_port: int, local_port: int,
             expect_failure = False, expect_auth_failure = False,
             client_seed = "", trusted_keys = "") -> None:
@@ -119,7 +139,80 @@ def run_nim(binary: Path, service: str, socks_port: int, local_port: int,
         "NIM_OCAPN_CLIENT_SEED_B64": client_seed,
         "NIM_OCAPN_TRUSTED_CLIENT_KEYS_B64": trusted_keys,
     })
-    subprocess.run([str(binary)], cwd=ROOT, env=environment, check=True, timeout=300)
+    label = "auth-failure" if expect_auth_failure else "connect-failure" if expect_failure else "authenticated"
+    started = time.monotonic()
+    print(f"[TOR] Nim {label}: start", flush=True)
+    try:
+        subprocess.run([str(binary)], cwd=ROOT, env=environment, check=True, timeout=90)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"Nim {label} timeout after {time.monotonic() - started:.1f}s") from error
+    print(f"[TOR] Nim {label}: PASS in {time.monotonic() - started:.1f}s", flush=True)
+
+
+def run_protected_multi_onion(tor: str, root: Path) -> None:
+    print("[TOR] protected three-node: prepare services", flush=True)
+    binary = root / "test_onion_handoff_e2e"
+    subprocess.run(["nim", "c", "--hints:off", f"--out:{binary}",
+                    "tests/test_onion_handoff_e2e.nim"], cwd=ROOT, check=True)
+    service_data = root / "multi-service-data"
+    service_data.mkdir(mode=0o700)
+    local_ports = [free_port(), free_port(), free_port()]
+    hidden_dirs = [root / f"hidden-{name}" for name in ("a", "b", "c")]
+    for directory in hidden_dirs:
+        directory.mkdir(mode=0o700)
+    service_torrc = root / "multi-service.torrc"
+    lines = [f"DataDirectory {service_data}\n", "SocksPort 0\n",
+             "ClientOnly 0\nRunAsDaemon 0\nLog notice stdout\n"]
+    for directory, local_port in zip(hidden_dirs, local_ports):
+        lines += [f"HiddenServiceDir {directory}\n",
+                  f"HiddenServicePort 9045 127.0.0.1:{local_port}\n"]
+    service_torrc.write_text("".join(lines))
+    service_process, service_output = start_tor(
+        tor, service_torrc, root / "multi-service.log")
+    client_process = client_output = None
+    try:
+        if not wait_for_bootstrap(service_process, root / "multi-service.log",
+                                  "protected-service"):
+            raise RuntimeError("protected three-node ENVIRONMENT TIMEOUT: service bootstrap")
+        hostnames: list[str] = []
+        deadline = time.monotonic() + 45
+        while len(hostnames) < 3 and time.monotonic() < deadline:
+            hostnames = [path.read_text().strip().removesuffix(".onion")
+                         for path in (directory / "hostname" for directory in hidden_dirs)
+                         if path.is_file()]
+            if len(hostnames) < 3:
+                time.sleep(0.25)
+        if len(hostnames) != 3:
+            raise RuntimeError(
+                "protected three-node ENVIRONMENT TIMEOUT: hostname publication")
+        client_process, client_output, socks_port = start_socks_tor(
+            tor, root / "multi-client")
+        if not wait_for_bootstrap(client_process, root / "multi-client/tor.log",
+                                  "protected-client"):
+            raise RuntimeError("protected three-node ENVIRONMENT TIMEOUT: client bootstrap")
+        environment = os.environ.copy()
+        environment.update({
+            "NIM_OCAPN_TOR_SOCKS": "127.0.0.1",
+            "NIM_OCAPN_TOR_SOCKS_PORT": str(socks_port),
+            "NIM_OCAPN_ONION_A": hostnames[0],
+            "NIM_OCAPN_ONION_B": hostnames[1],
+            "NIM_OCAPN_ONION_C": hostnames[2],
+            "NIM_OCAPN_ONION_A_PORT": str(local_ports[0]),
+            "NIM_OCAPN_ONION_B_PORT": str(local_ports[1]),
+            "NIM_OCAPN_ONION_C_PORT": str(local_ports[2]),
+            "NIM_OCAPN_ONION_SERVICE_PORT": "9045",
+            "NIM_OCAPN_ONION_TRACE": "1",
+            "NIM_OCAPN_ONION_PROTECTED_ONLY": "1",
+        })
+        print("[TOR] protected three-node: run Nim A/B/C", flush=True)
+        subprocess.run([str(binary)], cwd=ROOT, env=environment,
+                       check=True, timeout=180)
+        print("[TOR] protected three-node: PASS", flush=True)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("protected three-node Nim runner timeout") from error
+    finally:
+        stop(client_process, client_output)
+        stop(service_process, service_output)
 
 
 def main() -> None:
@@ -171,27 +264,29 @@ def main() -> None:
         client_process = None
         client_output = None
         try:
+            print("[TOR] service: start", flush=True)
             service_process, service_output = start_tor(
                 tor, service_torrc, root / "service.log")
             hostname = hidden_service / "hostname"
-            if not wait_for_bootstrap(service_process, root / "service.log"):
-                print("Real Tor v3 Onion E2E: SKIP (service Tor did not bootstrap)")
+            if not wait_for_bootstrap(service_process, root / "service.log", "service"):
+                print("Real Tor v3 Onion E2E: ENVIRONMENT TIMEOUT (service Tor did not bootstrap)")
                 print((root / "service.log").read_text(errors="replace")[-4000:])
                 return
             deadline = time.monotonic() + 30
             while not hostname.is_file() and time.monotonic() < deadline:
                 time.sleep(0.25)
             if not hostname.is_file():
-                print("Real Tor v3 Onion E2E: SKIP (service hostname was not created)")
+                print("Real Tor v3 Onion E2E: ENVIRONMENT TIMEOUT (service hostname was not created)")
                 return
             service = hostname.read_text().strip().removesuffix(".onion")
+            print(f"[TOR] service: hostname ready {service}", flush=True)
 
             for label, private_key in (("client-a", private_a), ("client-b", private_b)):
                 client_root = root / label
                 client_process, client_output, socks_port = start_client_tor(
                     tor, client_root, service, private_key)
                 try:
-                    if not wait_for_bootstrap(client_process, client_root / "tor.log"):
+                    if not wait_for_bootstrap(client_process, client_root / "tor.log", label):
                         raise RuntimeError(f"{label} Tor client did not bootstrap")
                     seed = seed_a if label == "client-a" else seed_b
                     run_nim(binary, service, socks_port, service_port,
@@ -208,7 +303,7 @@ def main() -> None:
             client_process, client_output, socks_port = start_client_tor(
                 tor, client_root, service, private_wrong)
             try:
-                if not wait_for_bootstrap(client_process, client_root / "tor.log"):
+                if not wait_for_bootstrap(client_process, client_root / "tor.log", "wrong-credential"):
                     raise RuntimeError("wrong-credential Tor client did not bootstrap")
                 run_nim(binary, service, socks_port, service_port, expect_failure=True)
             finally:
@@ -220,19 +315,20 @@ def main() -> None:
             (authorized / "client-a.auth").unlink()
             service_process, service_output = start_tor(
                 tor, service_torrc, root / "service-restarted.log")
-            if not wait_for_bootstrap(service_process, root / "service-restarted.log"):
+            if not wait_for_bootstrap(service_process, root / "service-restarted.log", "service-restart"):
                 raise RuntimeError("restarted service Tor did not bootstrap")
             client_root = root / "revoked-client"
             client_process, client_output, socks_port = start_client_tor(
                 tor, client_root, service, private_a)
             try:
-                if not wait_for_bootstrap(client_process, client_root / "tor.log"):
+                if not wait_for_bootstrap(client_process, client_root / "tor.log", "revoked-client"):
                     raise RuntimeError("revoked-credential Tor client did not bootstrap")
                 run_nim(binary, service, socks_port, service_port, expect_failure=True)
             finally:
                 stop(client_process, client_output)
                 client_process = client_output = None
-            print("Real Tor v3 Onion routing + client authorization: PASS")
+            print("Real Tor v3 Onion routing + client authorization: PASS", flush=True)
+            run_protected_multi_onion(tor, root)
         finally:
             stop(client_process, client_output)
             stop(service_process, service_output)
