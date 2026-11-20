@@ -1,6 +1,6 @@
-# Releasing a scoped stable version
+# Releasing a scoped release candidate
 
-This procedure prepares a reproducible scoped stable release using local commands,
+This procedure prepares a reproducible scoped release candidate using local commands,
 without publishing or creating a tag.
 
 1. Start from a clean Git checkout and verify the intended commit.
@@ -37,13 +37,14 @@ without publishing or creating a tag.
    nimble install 'https://example.invalid/nim-ocapn.git@<commit>'
    ```
 
-   For Nimble 0.26.2, clone the stable tag and use
+   For Nimble 0.26.2, clone the candidate tag and use
    `nimble install file:///absolute/path/to/nim-ocapn`. A fixed commit can be
    installed with `https://...@<commit>`. The Git URL is a procedure template,
    not a command to run against an unconfigured remote.
 6. Review `docs/BETA_RELEASE_CHECKLIST.md`, package exclusions, license, and
    `git status`. Ensure no identity files, certificates, logs, binaries or
    secrets are tracked.
-7. Change Nimble metadata to `1.0.0`, commit the change, and create the Git tag
-   `v1.0.0`. This task does
-   not create or push it.
+7. For this candidate, change Nimble metadata to `1.1.0rc1`, commit the change,
+   and create the Git tag `v1.1.0-rc.1` only in the separate release task. This
+   preparation task does not create or push it. The candidate is not a claim of
+   universal authenticated OCapN netlayer interoperability.

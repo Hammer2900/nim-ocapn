@@ -9,6 +9,12 @@ type
     nlkTcpTestingOnly
     nlkOnionTestingOnly
     nlkMutualTls
+  ClientAuthConfig* = object
+    ## Application authentication over an authenticated CapTP session.
+    trustedClientKeys*: seq[string]
+    onionServiceId*: string
+    capabilityName*: string
+    challengeTimeoutMs*: int
   NodeConfig* = object
     host*: string
     port*: Port
@@ -24,6 +30,7 @@ type
     maxActiveSessions*: int
     handshakeTimeoutMs*: int
     diagnosticSink*: DiagnosticSink
+    clientAuth*: ClientAuthConfig
     when defined(ssl):
       tlsServerConfig*: TlsTransportConfig
   NodeStats* = object
@@ -115,18 +122,21 @@ type
     onionConfig: OnionNetlayerConfig
     diagnosticSink: DiagnosticSink
     listenerNetlayer: NetlayerKind
+    clientAuth: ClientAuthConfig
+    protectedPublications: Table[string, Behavior]
 
 export IdentityError, TransportAuthEvidence, TransportEvidenceVerifier,
   PeerVerificationMode, SessionIdentityMode, PeerVerificationPolicy, NodeIdentity,
   testingOnlyPeerPolicy, exactPeerPolicy, authenticatedNetlayerPolicy,
+  authenticatedOnionPolicy,
   newEphemeralIdentity, loadIdentity, createIdentity, loadOrCreateIdentity,
-  writeIdentity
+  writeIdentity, signIdentity
 export PeerLocator, SturdyRef, newPeerLocator, samePeer, peerSyrup, sturdySyrup,
   peerLocator, sturdyRef, peerUri, sturdyUri, parsePeerUri, parseSturdyUri
 export DiagnosticEvent, DiagnosticSink, DiagnosticEventKind, DiagnosticErrorCategory
 export SessionLimits, SessionStats, SessionError, PromiseTimeoutError
 export HandoffLimits
-export Session, SessionState
+export Session, SessionState, ClientAuthenticationState, ClientAuthConfig
 when defined(ssl):
   export TlsTransportConfig, TlsTransportError, validateTlsConfig
 
@@ -136,7 +146,9 @@ proc defaultNodeConfig*(port: Port = Port(0)): NodeConfig =
     verificationPolicy: testingOnlyPeerPolicy, netlayer: nlkTcpTestingOnly,
     sessionLimits: defaultSessionLimits(), handoffLimits: HandoffLimits(maxPending: 256),
     onionConfig: defaultOnionNetlayerConfig(), maxActiveSessions: 256,
-    handshakeTimeoutMs: 30000)
+    handshakeTimeoutMs: 30000,
+    clientAuth: ClientAuthConfig(capabilityName: "authenticate",
+      challengeTimeoutMs: 30_000))
 
 proc loadNodeIdentity*(path: string): NodeIdentity =
   loadOrCreateIdentity(path)
@@ -163,7 +175,8 @@ proc newNodeImpl(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
               diagnosticSink: DiagnosticSink = nil;
               sessionIdentityMode = simPerSession;
               acceptTransport: AcceptTransport = nil;
-              listenerNetlayer = nlkTcpTestingOnly): Node =
+              listenerNetlayer = nlkTcpTestingOnly;
+              clientAuth = ClientAuthConfig()): Node =
   new(result)
   result.host = host
   result.port = port
@@ -172,12 +185,14 @@ proc newNodeImpl(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
   result.onionConfig = defaultOnionNetlayerConfig()
   result.diagnosticSink = diagnosticSink
   result.identity = identity
+  result.clientAuth = clientAuth
   result.verificationPolicy = verificationPolicy
   result.sessionIdentityMode = sessionIdentityMode
   if verificationPolicy.mode != pvmTestingOnly and identity.isNil:
     raise newException(IdentityError, "strict peer policy requires durable node identity")
   result.publications = initTable[string, Behavior]()
   result.typedPublications = initTable[string, TypedBehavior]()
+  result.protectedPublications = initTable[string, Behavior]()
   result.handoffEnliveners = @[]
   result.outbound = @[]
   result.outboundCursor = 0
@@ -187,12 +202,32 @@ proc newNodeImpl(host = "127.0.0.1"; port: Port; seedPrefix = "nim-node";
     sessionIdentityMode)
   result.handoffs.setDiagnosticSink(seedPrefix, diagnosticSink)
   let node = result
+  if clientAuth.trustedClientKeys.len > 0:
+    if clientAuth.onionServiceId.len == 0 or clientAuth.capabilityName.len == 0:
+      raise newException(SessionError,
+        "client authentication requires Onion Service ID and capability name")
+    for key in clientAuth.trustedClientKeys:
+      if key.len != 32:
+        raise newException(SessionError, "trusted client identity must be 32 bytes")
+    if clientAuth.challengeTimeoutMs <= 0:
+      raise newException(SessionError,
+        "client authentication challenge timeout must be positive")
+  proc installProtected(session: Session) =
+    for name, behavior in node.protectedPublications:
+      discard session.publishProtectedObject(name, behavior)
   result.manager = newTcpSessionManager(host, port, seedPrefix, host & ":" & $port,
     proc(session: Session) =
       for name, behavior in node.publications:
         discard session.publishObject(name, behavior)
       for name, behavior in node.typedPublications:
         installTyped(node, session, name, behavior)
+      if node.clientAuth.trustedClientKeys.len > 0:
+        discard session.enableClientAuthentication(node.clientAuth.trustedClientKeys,
+          node.clientAuth.onionServiceId, node.clientAuth.capabilityName,
+          proc(authorized: Session) = authorized.installProtected(),
+          challengeTimeoutMs = node.clientAuth.challengeTimeoutMs)
+      else:
+        session.installProtected()
       for name in node.handoffEnliveners:
         discard session.publishActor(name, proc(actor: Session;
             args: seq[SyrupValue]): SyrupValue =
@@ -232,6 +267,9 @@ proc newNode*(config: NodeConfig): Node =
     identity = loadNodeIdentity(config.identityPath)
   if config.sessionIdentityMode == simLegacyDurable and identity.isNil:
     raise newException(IdentityError, "legacy durable session identity requires node identity")
+  var clientAuth = config.clientAuth
+  if clientAuth.trustedClientKeys.len > 0 and clientAuth.challengeTimeoutMs == 0:
+    clientAuth.challengeTimeoutMs = 30_000
   var acceptTransport: AcceptTransport
   when defined(ssl):
     if config.netlayer == nlkMutualTls:
@@ -246,7 +284,7 @@ proc newNode*(config: NodeConfig): Node =
   result = newNodeImpl(config.host, config.port, config.seedPrefix, config.sessionLimits,
     config.handoffLimits, identity, config.verificationPolicy,
     config.maxActiveSessions, config.handshakeTimeoutMs, config.diagnosticSink,
-    config.sessionIdentityMode, acceptTransport, config.netlayer)
+    config.sessionIdentityMode, acceptTransport, config.netlayer, clientAuth)
   result.onionConfig = config.onionConfig
 
 proc setTraceSink*(node: Node; nodeId: string; sink: TraceSink) =
@@ -263,6 +301,72 @@ proc publicIdentity*(node: Node): string =
 
 proc publish*(node: Node; name: string; behavior: Behavior) =
   node.publications[name] = behavior
+
+proc publishProtected*(node: Node; name: string; behavior: Behavior) =
+  if node.clientAuth.trustedClientKeys.len == 0:
+    raise newException(SessionError, "protected publication requires client authentication")
+  node.protectedPublications[name] = behavior
+
+proc normalizeOnionServiceId(value: string): string =
+  result = value.toLowerAscii()
+  if result.endsWith(".onion"):
+    result.setLen(result.len - 6)
+
+proc waitForAuthentication(session, peer: Session; promise: Promise;
+                           maxPumps: int): SyrupValue =
+  var remaining = maxPumps
+  while not promise.settled():
+    if remaining <= 0:
+      discard session.cancel(promise, "client authentication timeout")
+      raise newException(PromiseTimeoutError, "client authentication timeout")
+    discard session.pump()
+    if not peer.isNil and peer.state != ssClosed:
+      discard peer.pump()
+    if not promise.settled():
+      discard session.transport.waitReadable(1)
+      if not peer.isNil and peer.state != ssClosed:
+        discard peer.transport.waitReadable(1)
+    dec remaining
+  if promise.state == psBroken:
+    raise newException(SessionError, promise.reason)
+  promise.value
+
+proc authenticateClient*(session: Session; identity: NodeIdentity;
+                         authName = "authenticate"; maxPumps = 10000;
+                         pumpPeer: Session = nil): bool =
+  if session.isNil or session.state != ssOpen:
+    raise newException(SessionError, "client authentication requires an open session")
+  if identity.isNil:
+    raise newException(IdentityError, "client authentication requires a durable identity")
+  if not session.isTransportAuthenticated():
+    raise newException(SessionError,
+      "client authentication requires an authenticated transport")
+  let auth = session.waitForAuthentication(pumpPeer,
+    sessionApi.fetch(session, authName), maxPumps).descriptor()
+  let challenge = session.waitForAuthentication(pumpPeer,
+    sessionApi.call(session, auth, "challenge", @[]), maxPumps)
+  if challenge.kind != skRecord or challenge.label.kind != skSymbol or
+      challenge.label.data != "nim-ocapn-client-auth-challenge" or
+      challenge.fields.len != 5 or challenge.fields[0].kind != skBytes or
+      challenge.fields[0].data.len != 32 or challenge.fields[1].kind != skBytes or
+      challenge.fields[1].data.len != 32 or challenge.fields[2].kind != skBytes or
+      challenge.fields[2].data != session.localPublicKey or
+      challenge.fields[3].kind != skBytes or challenge.fields[3].data.len != 32 or
+      challenge.fields[4].kind != skString:
+    raise newException(SessionError, "invalid client authentication challenge")
+  if session.expectedPeer.transport == "onion" and
+      normalizeOnionServiceId(challenge.fields[4].data) !=
+      normalizeOnionServiceId(session.expectedPeer.designator):
+    raise newException(SessionError, "client authentication service binding mismatch")
+  let binding = clientAuthenticationBinding(challenge.fields[0].data,
+    identity.publicKey, session.localPublicKey, challenge.fields[1].data,
+    challenge.fields[3].data, challenge.fields[4].data)
+  let reply = session.waitForAuthentication(pumpPeer,
+    sessionApi.call(session, auth, "prove",
+      [bytes(identity.publicKey), bytes(identity.signIdentity(binding))]), maxPumps)
+  if reply.kind != skBool or not reply.boolean:
+    raise newException(SessionError, "client authentication was rejected")
+  true
 
 proc isHandoffGive(value: SyrupValue): bool =
   value.kind == skRecord and value.label.kind == skSymbol and

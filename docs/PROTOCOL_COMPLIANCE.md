@@ -33,6 +33,7 @@ and limitation notes follow the table.
 | NL-05 | Transport-neutral CapTP behavior | `tests/test_transport_conformance.nim`, `tests/tls_peer.nim` | `nimble transportConformanceTest` | COMPLETE for in-memory/TCP/TLS tested cases; Onion conditional |
 | ID-03 | Explicit expected-peer policy and session wire key | `src/identity.nim`, `src/session.nim`, `src/api.nim`, `src/server.nim` | `tests/test_identity.nim` | COMPLETE for exact current-session-key policy; reconnect requires a new pin |
 | ID-04 | Locator/session identity binding | `src/session.nim:setExpectedPeer`, `src/api.nim`, `src/handoff.nim` | `tests/test_identity.nim` | PARTIAL: strict signed-locator/key binding; Onion ownership unproven |
+| ID-05 | Durable client identity binding | `src/session.nim`, `src/api.nim`, `src/identity.nim` | `tests/test_client_auth.nim`, real Onion runner | PARTIAL: project-specific application capability over authenticated Onion; not a standard CapTP/netlayer identity |
 | NL-03 | Authenticated netlayer evidence | `src/transport.nim:authenticationEvidence`, `src/session.nim`, `src/tls_transport.nim` | `tests/test_identity.nim`, `nimble tlsTest` | PARTIAL: project-specific mutual-TLS provider; no official OCapN profile |
 | NL-04 | Authenticated channel provider | `src/tls_transport.nim` | `nimble tlsTest` | PARTIAL: real two-process project TLS profile; not official OCapN interop |
 
@@ -54,7 +55,7 @@ and limitation notes follow the table.
 | Bootstrap and sturdyref enlivening | `api.nim`, `handoff.nim` | PARTIAL | TCP/Glowcap paths work; no authenticated production locator binding |
 | OCapN peer locator semantics | `locators.nim` | PARTIAL | strict edge vectors pass; no runtime selector separates strict from legacy binary swiss parsing |
 | TCP netlayer | `transport.nim`, `server.nim` | TESTING ONLY | reliable ordered transport; no channel security |
-| Tor Onion adapter | `onion.nim` | PARTIAL | isolated real Tor v3 handshake/bootstrap/pipelining/reconnect/concurrency/failure test via `nimble onionE2eTest`; `authenticated=false` by design |
+| Tor Onion adapter | `onion.nim`, `api.nim`, `session.nim` | PARTIAL | isolated real Tor v3 routing, endpoint profile, external client-authorization access tests, and project-specific durable-client proof; no standard netlayer identity binding |
 | Cross-implementation interoperability | Glowcap testing profile | PARTIAL | `nimble interopTest`: two-way bootstrap/invocation PASS; advanced operations are unsupported or unverified |
 
 ## Module inventory
@@ -111,3 +112,13 @@ still project-specific and does not establish an official OCapN netlayer.
 Sources: [`CapTP Specification.md`](../../ocapn/draft-specifications/CapTP%20Specification.md),
 [`Locators.md`](../../ocapn/draft-specifications/Locators.md),
 [`Netlayers.md`](../../ocapn/draft-specifications/Netlayers.md).
+
+### Tor-5 profile controls
+
+The application-level client proof is single-use, monotonic-time bounded and
+bound to the server Session's actual nonce, ephemeral keys, Session ID, Onion
+Service ID and role labels. Protected exports are withheld until successful
+verification and protected handoff gifts are not redeemed by unauthenticated
+Sessions. This strengthens the project-specific profile only; it does not
+change normative CapTP wire semantics or establish universal authenticated
+netlayer interoperability.

@@ -62,7 +62,62 @@ let answer = api.waitFor(session, greeter.call("greet", [text("world")]))
 
 `nlkTcpTestingOnly` is unverified and unencrypted. Onion selection is explicit:
 `connectUsing(peer, nlkOnionTestingOnly)`, and never falls back to TCP. The
-project-specific mutual-TLS client adapter is available as
+optional project-specific server-authenticated Onion profile requires both an
+exact expected Onion locator and explicit configuration:
+
+```nim
+config.onionConfig.authenticateServer = true
+config.verificationPolicy = authenticatedOnionPolicy(peer)
+let session = node.connectUsing(peer, nlkOnionTestingOnly)
+```
+
+This authenticates the remote endpoint represented by the expected Onion
+Service ID through the configured Tor daemon and binds the current CapTP
+session key to that stream. It does not authenticate the Onion client, prove
+durable Node ownership, or establish an official OCapN authenticated netlayer.
+Inbound Onion connections remain unauthenticated.
+
+Tor v3 client authorization is not managed by `nim-ocapn`. Configure the
+external Tor daemon with `authorized_clients/*.auth` on the service and
+`ClientOnionAuthDir/*.auth_private` on each client. Those credentials restrict
+which Tor clients can discover/use the service; they are not CapTP client
+identity evidence and are never loaded, logged, or serialized by this library.
+
+For a project-specific authenticated Onion deployment, configure a trusted
+durable client-key list and publish protected capabilities explicitly:
+
+```nim
+config.clientAuth = ClientAuthConfig(
+  trustedClientKeys: @[trustedClientPublicKey],
+  onionServiceId: expectedServiceId,
+  capabilityName: "authenticate",
+  challengeTimeoutMs: 30_000)
+let node = newNode(config)
+node.publishProtected("greeter", greeterBehavior)
+```
+
+The client must first use the server-authenticated Onion session:
+
+```nim
+discard authenticateClient(session, clientIdentity)
+let greeter = node.bootstrap(session, "greeter")
+```
+
+`authenticateClient` signs a fresh challenge using the durable client identity.
+
+The challenge is single-use and expires after `challengeTimeoutMs` (30 seconds
+by default). Protected capabilities are not published before authentication
+and cannot be redeemed through an unauthenticated handoff auxiliary Session;
+that Session needs its own authenticated state. This is a project-specific
+application profile, not a universal OCapN authenticated netlayer.
+The proof is bound to the current CapTP session keys, Session ID, configured
+Onion Service ID, and explicit roles. `publishProtected` capabilities are not
+available before verification. `pumpPeer` is an optional argument only for an
+embedded two-Session test topology; normal Node applications leave it unset.
+This is not a standard OCapN authentication mechanism and does not prove a
+durable server Node identity.
+
+The project-specific mutual-TLS client adapter is available as
 `connectMutualTls` when compiled with `-d:ssl`; it requires its certificate,
 CA, certificate-fingerprint, expected CapTP-key configuration, and an
 `authenticatedNetlayerPolicy`. It fails before opening a socket when the Node

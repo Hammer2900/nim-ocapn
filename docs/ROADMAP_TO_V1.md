@@ -307,8 +307,45 @@ durable identity binding is inferred.
 checkout. It starts an isolated Tor daemon and temporary Onion Service, then
 verifies SOCKS5 routing, CapTP handshake, bootstrap/pipelining, two repeated
 sessions, concurrent clients, unavailable-service rejection, and cleanup.
-Onion remains testing-only: the pinned baseline defines the Service ID as the
-locator designator but does not define a cryptographic binding from that ID to
-the ephemeral CapTP session key. The next production Onion task is therefore
-to select and verify a normative or explicitly trusted out-of-band binding;
-until then `OnionTransport.authenticated` must remain false.
+The explicit Tor-2 profile now supports outbound server-endpoint
+authentication when `authenticateServer=true` and
+`authenticatedOnionPolicy(expectedPeer)` are both selected. It trusts the
+configured Tor daemon's exact Service-ID routing and binds the fresh CapTP key
+to that stream. This remains project-specific: inbound Onion clients are not
+authenticated, durable Node ownership is not proved, and no universal OCapN
+authenticated netlayer claim is made. The next production task is to obtain a
+normative or independently trusted Onion-to-CapTP identity binding if durable
+peer authorization is required.
+
+### Tor-3 status
+
+The isolated Tor runner now configures v3 X25519 client authorization entirely
+through external Tor daemon files. Two allowed clients, a wrong credential,
+credential reuse across reconnects, concurrent sessions, and revocation after
+service restart are exercised. This is **ACCESS-CONTROLLED**, not mutual
+CapTP authentication: Tor does not provide the client credential or a
+cryptographic credential-to-CapTP-key binding to `Session`. A future mutual
+profile requires an explicit CapTP trust anchor or a normative binding; no
+wire extension was invented here.
+
+### Tor-4 status
+
+An opt-in project-specific application authentication capability now binds a
+trusted durable client Ed25519 key to one authenticated Onion CapTP Session.
+The signed proof includes a fresh nonce, both ephemeral session keys, the
+Session ID, the configured Onion Service ID, and role-separated domain data.
+Protected publications are withheld until verification; reconnects require a
+new challenge and proof. The real Tor runner verifies trusted clients,
+unknown-key rejection, concurrent/repeated sessions, and cleanup. This is not
+a new CapTP opcode or a universal OCapN netlayer, and it does not prove a
+durable server Node identity.
+
+### Tor-5 status
+
+Client-authentication boundary hardening is implemented in the project-specific
+Onion profile. Challenges expire and are consumed, canonical proofs use
+server-held Session state, and protected exports cannot be redeemed through an
+unauthenticated Session or implicit auxiliary handoff path. Negative vectors
+and the real Tor runner cover replay, wrong identity material, concurrent
+Sessions, revocation and cleanup. The profile remains scoped and is not a
+universal authenticated OCapN netlayer.

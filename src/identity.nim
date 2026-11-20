@@ -64,6 +64,12 @@ proc sessionSeed*(identity: NodeIdentity): string =
     raise newException(IdentityError, "identity is unavailable")
   identity.secret
 
+proc signIdentity*(identity: NodeIdentity; message: string): string =
+  ## Sign application authentication data without exposing the private seed.
+  if identity.isNil or identity.secret.len != IdentitySeedSize:
+    raise newException(IdentityError, "identity is unavailable")
+  crypto.sign(identity.secret, message)
+
 proc encodedIdentity(seed: string): string =
   result = IdentityMagic
   result.add(char(IdentityVersion))

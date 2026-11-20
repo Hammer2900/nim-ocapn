@@ -1,4 +1,4 @@
-import std/[strutils, tables, monotimes, sysrand]
+import std/[strutils, tables, monotimes, times, sysrand]
 import ./[crypto, framing, gifts, identity, locators, messages, promises, references, syrup, transport]
 
 type
@@ -69,6 +69,9 @@ type
     ownership*: string
   TraceSink* = proc(event: TraceEvent) {.closure.}
   SessionState* = enum ssNegotiating, ssOpen, ssClosed
+  ClientAuthenticationState* = enum
+    casDisabled, casUnauthenticated, casChallengePending, casAuthenticated,
+    casRejected
   AnswerContext* = object
     answerPosition*: int64
     resolver*: SyrupValue
@@ -166,6 +169,13 @@ type
     traceSequence*: int64
     diagnosticSink*: DiagnosticSink
     diagnosticNodeId*: string
+    clientAuthState: ClientAuthenticationState
+    clientAuthTrustedKeys: seq[string]
+    clientAuthServiceId: string
+    clientAuthNonce: string
+    clientAuthDeadline: MonoTime
+    protectedExports: Table[int64, bool]
+    clientAuthCallback: proc(session: Session) {.closure.}
 
 proc defaultSessionLimits*(): SessionLimits =
   SessionLimits(maxFrameBytes: 1024 * 1024, maxPendingPromises: 4096,
@@ -347,6 +357,7 @@ proc newBaseSession(transport: Transport; seed: string; limits: SessionLimits;
     retiredListenerResolvers: initTable[int64, bool](),
     seenHandoffCounts: initTable[int64, bool](),
     gifts: newGiftTable(),
+    protectedExports: initTable[int64, bool](),
     ownsGifts: true,
     giftPromises: @[],
     activeAnswerPosition: -1,
@@ -405,6 +416,11 @@ proc publishObject*(session: Session; name: string; behavior: Behavior): Capabil
   result = session.exportObject(behavior)
   session.publications[name] = result
 
+proc publishProtectedObject*(session: Session; name: string;
+                             behavior: Behavior): CapabilityRef =
+  result = session.publishObject(name, behavior)
+  session.protectedExports[result.position] = true
+
 proc exportActor*(session: Session; behavior: ActorBehavior): CapabilityRef =
   result = session.exportObject(proc(args: seq[SyrupValue]): SyrupValue = list())
   session.actors[result.position] = behavior
@@ -440,10 +456,94 @@ proc publishActor*(session: Session; name: string; behavior: ActorBehavior): Cap
   result = session.exportActor(behavior)
   session.publications[name] = result
 
+proc clientAuthenticationBinding*(nonce, clientDurableKey, clientSessionKey,
+                                  serverSessionKey, sessionId,
+                                  onionServiceId: string): string =
+  record(symbol("nim-ocapn-client-auth-v1"), bytes(nonce),
+    bytes(clientDurableKey), bytes(clientSessionKey), bytes(serverSessionKey),
+    bytes(sessionId), text(onionServiceId), symbol("client"), symbol("server")).encoded()
+
+proc clientAuthenticationState*(session: Session): ClientAuthenticationState =
+  session.clientAuthState
+
+proc freshClientAuthNonce(): string =
+  let randomBytes = urandom(32)
+  result = newString(randomBytes.len)
+  for index, value in randomBytes:
+    result[index] = char(value)
+
+proc trustedClientKey(session: Session; publicKey: string): bool =
+  publicKey.len == 32 and publicKey in session.clientAuthTrustedKeys
+
+proc enableClientAuthentication*(session: Session;
+                                 trustedClientKeys: openArray[string];
+                                 onionServiceId: string;
+                                 capabilityName = "authenticate";
+                                 onAuthenticated: proc(session: Session) {.closure.} = nil;
+                                 challengeTimeoutMs = 30_000): CapabilityRef =
+  if session.isNil or session.state == ssClosed:
+    raise newException(SessionError, "cannot enable client authentication on a closed session")
+  if trustedClientKeys.len == 0 or onionServiceId.len == 0 or
+      capabilityName.len == 0 or challengeTimeoutMs <= 0:
+    raise newException(SessionError, "client authentication requires trust anchors and Onion Service ID")
+  for key in trustedClientKeys:
+    if key.len != 32:
+      raise newException(SessionError, "trusted client identity must be 32 bytes")
+  session.clientAuthTrustedKeys = @trustedClientKeys
+  session.clientAuthServiceId = onionServiceId
+  session.clientAuthNonce = ""
+  session.clientAuthDeadline = getMonoTime()
+  session.clientAuthCallback = onAuthenticated
+  session.clientAuthState = casUnauthenticated
+  result = session.publishActor(capabilityName, proc(actor: Session;
+                                                     args: seq[SyrupValue]): SyrupValue =
+    if args.len == 1 and args[0].kind == skSymbol and args[0].data == "challenge":
+      if actor.clientAuthState != casUnauthenticated:
+        raise newException(SessionError, "client authentication challenge is unavailable")
+      if actor.remotePublicKey.len != 32:
+        raise newException(SessionError, "client session identity is unavailable")
+      actor.clientAuthNonce = freshClientAuthNonce()
+      actor.clientAuthDeadline = getMonoTime() + initDuration(milliseconds = challengeTimeoutMs)
+      actor.clientAuthState = casChallengePending
+      return record(symbol("nim-ocapn-client-auth-challenge"),
+        bytes(actor.clientAuthNonce), bytes(actor.localPublicKey),
+        bytes(actor.remotePublicKey), bytes(actor.sessionId()),
+        text(actor.clientAuthServiceId))
+    if args.len == 3 and args[0].kind == skSymbol and args[0].data == "prove" and
+        args[1].kind == skBytes and args[2].kind == skBytes:
+      if actor.clientAuthState != casChallengePending:
+        raise newException(SessionError, "client authentication challenge is not pending")
+      if getMonoTime() > actor.clientAuthDeadline:
+        actor.clientAuthNonce = ""
+        actor.clientAuthState = casRejected
+        raise newException(SessionError, "client authentication challenge expired")
+      let clientKey = args[1].data
+      let binding = clientAuthenticationBinding(actor.clientAuthNonce, clientKey,
+        actor.remotePublicKey, actor.localPublicKey, actor.sessionId(),
+        actor.clientAuthServiceId)
+      if args[2].data.len != 64 or not actor.trustedClientKey(clientKey) or
+          not crypto.verify(clientKey, binding, args[2].data):
+        actor.clientAuthState = casRejected
+        raise newException(SessionError, "client authentication proof rejected")
+      actor.clientAuthNonce = ""
+      actor.clientAuthDeadline = getMonoTime()
+      actor.clientAuthState = casAuthenticated
+      if not actor.clientAuthCallback.isNil:
+        actor.clientAuthCallback(actor)
+      return boolean(true)
+    raise newException(SessionError, "invalid client authentication request"))
+
 proc depositGift*(session: Session; giftId, receiverKey: string; value: SyrupValue;
                   provenance = GiftProvenance()) =
+  var protected = false
+  try:
+    let reference = value.descriptor()
+    protected = reference.kind == rkExport and
+      session.protectedExports.getOrDefault(reference.position)
+  except ReferenceError:
+    discard
   session.gifts.deposit(giftId, receiverKey, value, provenance,
-    cast[pointer](session))
+    cast[pointer](session), protected)
 
 proc exportCapabilityProxy*(targetSession, sourceSession: Session;
                             sourceReference: CapabilityRef): CapabilityRef
@@ -491,7 +591,8 @@ proc withdrawGift*(session: Session; giftId, receiverKey: string;
                    provenance = GiftProvenance()): Promise =
   result = session.gifts.withdraw(giftId, receiverKey, provenance,
     proc(value: SyrupValue; owner: pointer): SyrupValue =
-      session.mapGiftCapability(value, owner))
+      session.mapGiftCapability(value, owner),
+    session.clientAuthState == casAuthenticated)
   session.giftPromises.add(result)
   result.onSettle(proc(promise: Promise) =
     for index, tracked in session.giftPromises:
@@ -538,7 +639,9 @@ proc verifyPeerPolicy(session: Session): bool =
       raise newException(SessionError, "authenticated netlayer cannot bind CapTP identity")
     let boundEvidence = session.transport.authenticationEvidence()
     if not boundEvidence.authenticated or not boundEvidence.channelIntegrity or
-        boundEvidence.proofType != externalAuthenticatedChannel or
+        not boundEvidence.channelConfidential or
+        boundEvidence.proofType != externalAuthenticatedChannel and
+        boundEvidence.proofType != torOnionServiceV3 or
         boundEvidence.peerIdentity.len != 32 or
         boundEvidence.peerIdentity != session.remotePublicKey or
         session.verificationPolicy.transportVerifier.isNil or

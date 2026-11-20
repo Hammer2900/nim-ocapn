@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.1.0-rc.1
+
+Scoped release candidate for the project-specific authenticated Onion
+deployment profile.
+
+- Adds real isolated Tor v3 E2E coverage for routing, client authorization,
+  reconnect, concurrency, revocation and cleanup.
+- Adds application-level durable client identity authentication over an
+  authenticated Onion CapTP Session.
+- Adds single-use challenge expiry and fail-closed protected capability
+  publication and handoff behavior.
+- Preserves the standard Syrup/CapTP wire format and fresh per-session Ed25519
+  identities.
+
+Security scope: the Onion mutual endpoint profile is project-specific
+application authentication, not a universal authenticated OCapN netlayer. It
+does not prove durable server Node identity. Raw TCP and default Onion remain
+testing-only; advanced independent-peer interoperability remains partial.
+
 ## 1.0.0
 
 Scoped stable protocol-library release prepared from `v1.0.0-rc.1` without

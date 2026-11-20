@@ -1,5 +1,5 @@
 import std/[monotimes, net, nativesockets, strutils, tables, times]
-import ./[locators, transport]
+import ./[identity, locators, transport]
 
 type
   OnionError* = object of CatchableError
@@ -8,13 +8,19 @@ type
     socksPort*: Port
     connectTimeoutMs*: int
     servicePort*: Port
+    ## Explicitly trust the Tor daemon's routing/authentication for outbound
+    ## connections. Inbound Onion transports never use this flag.
+    authenticateServer*: bool
   OnionTransport* = ref object of Transport
     inner: TcpTransport
     peer*: PeerLocator
     socksConnected*: bool
     endpointAccepted*: bool
-    ## Tor routing is not CapTP identity authentication.
-    authenticated*: bool
+    ## Set only by the concrete dial path.  Callers must not be able to
+    ## manufacture authenticated transport evidence by mutating the object.
+    authenticated: bool
+    boundPeerIdentity: string
+    authenticatedServiceIdentity: string
   OnionListener* = ref object
     inner: TcpListener
     peer*: PeerLocator
@@ -23,7 +29,7 @@ type
 
 proc defaultOnionNetlayerConfig*(): OnionNetlayerConfig =
   OnionNetlayerConfig(socksHost: "127.0.0.1", socksPort: Port(9050),
-    connectTimeoutMs: 10000, servicePort: Port(9045))
+    connectTimeoutMs: 10000, servicePort: Port(9045), authenticateServer: false)
 
 proc validateConfig(config: OnionNetlayerConfig) =
   if config.socksHost.len == 0 or config.socksPort == Port(0) or
@@ -47,6 +53,15 @@ proc serviceId(peer: PeerLocator): string =
       raise newException(OnionError, "invalid Tor ED25519-V3 service ID")
 
 proc onionHost(peer: PeerLocator): string = peer.serviceId() & ".onion"
+
+proc authenticatedOnionPolicy*(peer: PeerLocator): PeerVerificationPolicy =
+  let expectedService = peer.serviceId()
+  result = authenticatedNetlayerPolicy(proc(evidence: TransportAuthEvidence;
+                                             captpPublicKey: string): bool =
+    evidence.proofType == torOnionServiceV3 and
+    evidence.transportIdentity == expectedService and
+    evidence.peerIdentity == captpPublicKey and evidence.authenticated and
+    evidence.channelIntegrity and evidence.channelConfidential)
 
 proc readExact(socket: Socket; size, timeoutMs: int): string =
   let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
@@ -91,7 +106,8 @@ proc socks5Connect(config: OnionNetlayerConfig; peer: PeerLocator): TcpTransport
 proc dial*(netlayer: OnionNetlayer; peer: PeerLocator): OnionTransport =
   if netlayer.isNil: raise newException(OnionError, "onion netlayer is nil")
   result = OnionTransport(inner: netlayer.config.socks5Connect(peer), peer: peer,
-    authenticated: false, socksConnected: true)
+    authenticated: netlayer.config.authenticateServer, socksConnected: true,
+    authenticatedServiceIdentity: peer.serviceId())
 
 proc listen*(netlayer: OnionNetlayer; localHost = "127.0.0.1";
              localPort = Port(9045); advertised: PeerLocator): OnionListener =
@@ -130,7 +146,8 @@ proc close*(listener: OnionListener) =
   if not listener.isNil: listener.inner.close()
 
 proc peerLocator*(transport: OnionTransport): PeerLocator = transport.peer
-proc isAuthenticated*(transport: OnionTransport): bool = transport.authenticated
+proc isAuthenticated*(transport: OnionTransport): bool =
+  transport.authenticated and transport.boundPeerIdentity.len == 32
 proc socksEstablished*(transport: OnionTransport): bool = transport.socksConnected
 proc endpointWasAccepted*(transport: OnionTransport): bool = transport.endpointAccepted
 proc socketHandle*(transport: OnionTransport): SocketHandle = transport.inner.socketHandle()
@@ -147,6 +164,20 @@ method queuedBytes*(transport: OnionTransport): int = transport.inner.queuedByte
 method waitReadable*(transport: OnionTransport; timeoutMs: int): bool =
   transport.inner.waitReadable(timeoutMs)
 
-method peerIdentity*(transport: OnionTransport): string = ""
+method peerIdentity*(transport: OnionTransport): string = transport.boundPeerIdentity
 
-method peerAuthenticated*(transport: OnionTransport): bool = transport.authenticated
+method peerAuthenticated*(transport: OnionTransport): bool = transport.isAuthenticated()
+
+method authenticationEvidence*(transport: OnionTransport): TransportAuthEvidence =
+  TransportAuthEvidence(peerIdentity: transport.boundPeerIdentity,
+    transportIdentity: transport.authenticatedServiceIdentity,
+    proofType: torOnionServiceV3,
+    authenticated: transport.authenticated, channelIntegrity: transport.authenticated,
+    channelConfidential: transport.authenticated)
+
+method bindPeerIdentity*(transport: OnionTransport; captpPublicKey: string): bool =
+  if not transport.authenticated or captpPublicKey.len != 32: return false
+  if transport.boundPeerIdentity.len == 0:
+    transport.boundPeerIdentity = captpPublicKey
+    return true
+  transport.boundPeerIdentity == captpPublicKey

@@ -56,13 +56,22 @@ The CapTP public key is checked independently by `PeerVerificationPolicy`.
 Both checks must pass before `peerVerified` becomes true. A substituted
 locator or key therefore fails closed and clears session state.
 
-The Onion adapter proves SOCKS routing and endpoint reachability, not the
-relationship between a Tor Service ID and a CapTP Ed25519 key. Its
+The default Onion adapter proves SOCKS routing and endpoint reachability, not
+the relationship between a Tor Service ID and a CapTP Ed25519 key. Its
 `peerAuthenticated` value remains false. No byte comparison between these two
-different identity systems is performed. A production locator/session binding
-mechanism for an authenticated Tor identity remains Batch C work. The current
-Onion profile can verify an externally supplied CapTP key and the advertised
-Onion locator, but this is not proof that the Tor Service ID owns that key.
+different identity systems is performed. The default and inbound Onion paths
+are not authenticated production profiles.
+
+The explicit `authenticateServer` Onion profile is narrower: it treats a
+successful connection through a trusted Tor v3 SOCKS daemon to the exact
+expected Service ID as server-endpoint authentication, then binds the fresh
+CapTP session key to that already-established stream. The proof type is
+`tor-onion-service-v3`; it is accepted only with
+`authenticatedOnionPolicy(expectedPeer)`. This is a project-specific trust
+profile, not a signature by the Onion private key over the CapTP key. It does
+not authenticate inbound clients or prove durable Node identity ownership.
+The application must trust the local Tor daemon and its SOCKS endpoint; a
+substituted or malicious proxy invalidates this assumption.
 
 TCP is testing-only: it provides ordered I/O but no confidentiality or channel
 authentication. Applications requiring production authorization must configure

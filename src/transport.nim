@@ -20,6 +20,7 @@ type
     closed: bool
 
 const externalAuthenticatedChannel* = "external-authenticated-channel"
+const torOnionServiceV3* = "tor-onion-service-v3"
 const maxInMemoryInboxBytes = 1024 * 1024
 
 proc inMemoryPair*(): tuple[local, remote: InMemoryTransport] =

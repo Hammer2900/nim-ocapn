@@ -1,6 +1,6 @@
 # Nimble 0.26 splits cached package paths at the last hyphen; keep the
 # prerelease marker attached to the numeric version so clean installs work.
-version       = "1.0.0"
+version       = "1.1.0rc1"
 author        = "NimOCPN contributors"
 description   = "Minimal independent OCapN/CapTP implementation in Nim"
 license       = "Apache-2.0"
@@ -13,10 +13,13 @@ skipFiles     = @[
 ]
 
 task test, "Run NimOCPN tests":
-  exec "nim c -r --hints:off tests/test_syrup.nim && nim c -r --hints:off tests/test_messages.nim && nim c -r --hints:off tests/test_locators.nim && nim c -r --hints:off tests/test_transport.nim && nim c -r --hints:off tests/test_onion.nim && nim c -r --hints:off tests/test_session.nim && nim c -r --hints:off tests/test_server.nim && nim c -r --hints:off tests/test_gifts.nim && nim c -r --hints:off tests/test_handoff.nim && nim c -r --hints:off tests/test_handoff_disconnect.nim && nim c -r --hints:off tests/test_api.nim && nim c -r --hints:off tests/test_identity.nim"
+  exec "nim c -r --hints:off tests/test_syrup.nim && nim c -r --hints:off tests/test_messages.nim && nim c -r --hints:off tests/test_locators.nim && nim c -r --hints:off tests/test_transport.nim && nim c -r --hints:off tests/test_onion.nim && nim c -r --hints:off tests/test_session.nim && nim c -r --hints:off tests/test_server.nim && nim c -r --hints:off tests/test_gifts.nim && nim c -r --hints:off tests/test_handoff.nim && nim c -r --hints:off tests/test_handoff_disconnect.nim && nim c -r --hints:off tests/test_api.nim && nim c -r --hints:off tests/test_identity.nim && nim c -r --hints:off tests/test_client_auth.nim"
 
 task identityTest, "Run durable identity and peer verification tests":
-  exec "nim c -r --hints:off tests/test_identity.nim"
+  exec "nim c -r --hints:off tests/test_identity.nim && nim c -r --hints:off tests/test_client_auth.nim"
+
+task clientAuthTest, "Run CapTP durable client identity binding tests":
+  exec "nim c -r --hints:off tests/test_client_auth.nim"
 
 task tlsTest, "Run the real two-process mutual-TLS CapTP profile test":
   exec "python3 tests/test_tls_e2e.py && python3 tests/test_tls_node_api.py"

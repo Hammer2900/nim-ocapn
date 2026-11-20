@@ -74,6 +74,10 @@ source was changed. The reproducible runner is `nimble interopTest`.
 | Distributed GC | Nim ↔ Guile Goblins | CapTP v1 | UNVERIFIED | Wire GC is covered upstream → Goblins; object lifetime is not observable from the Nim-facing fixture |
 | Invalid sturdyref/disconnect cleanup | Nim ↔ Guile Goblins | Goblins OCapN test-suite | UNSUPPORTED | Upstream suite does not provide this exact bounded scenario |
 | Real Tor v3 routing and CapTP lifecycle | Nim ↔ Nim | isolated Tor daemon, `onion` testing profile | PASS | `nimble onionE2eTest`: sequential sessions, concurrent clients, pipelined calls, unavailable-service rejection, and cleanup |
+| Explicit Onion server authentication | Nim ↔ Nim | project-specific `tor-onion-service-v3` profile | PASS | Real Tor v3 runner verifies expected Service ID, CapTP binding on the stream, reconnect, concurrency, and wrong-policy rejection; endpoint-only row, client proof is separate |
+| Tor v3 client authorization access control | Nim ↔ Nim | external Tor `descriptor:x25519` credentials | PASS | Isolated runner passes two allowed clients, rejects wrong credential, and rejects revoked credential after service restart; no CapTP client identity binding |
+| Onion durable client proof and protected capability gate | Nim ↔ Nim | project-specific application profile over authenticated Onion | PASS | Real Tor runner plus client-auth vectors cover trusted/unknown keys, replay, expiry, concurrent Sessions, pipelining denial before auth, reconnect and cleanup; not universal netlayer interoperability |
+| Onion durable client identity binding | Nim ↔ Nim | project-specific CapTP authentication capability over authenticated Onion | PASS | Real runner verifies two trusted durable keys, fresh session binding, protected capability gating, unknown-key rejection, and cleanup; not independent-peer interoperability |
 
 The previous recursive delivery-release defect is fixed in `src/session.nim`:
 resolver fulfillment values are retained by the promise and are not immediately

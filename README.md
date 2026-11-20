@@ -4,8 +4,8 @@
 > protocol.
 
 [![Nim 2.x](https://img.shields.io/badge/Nim-2.x-FFE953?logo=nim)](https://nim-lang.org/)
-[![Version](https://img.shields.io/badge/version-1.0.0-5B8CFF)](./nimocapn.nimble)
-[![Status](https://img.shields.io/badge/status-stable-green)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.0--rc.1-5B8CFF)](./nimocapn.nimble)
+[![Status](https://img.shields.io/badge/status-release--candidate-orange)](./CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./nimocapn.nimble)
 
 **Navigation:** [Overview](#overview) · [Quick start](#quick-start) ·
@@ -41,27 +41,28 @@ VM, persistence layer, or Goblins port.
 | Property | Current profile |
 | --- | --- |
 | Language | Nim 2.x |
-| Package version | `1.0.0` (`v1.0.0` scoped stable) |
+| Package version | `1.1.0rc1` (`v1.1.0-rc.1` release candidate) |
 | Protocol baseline | Pinned OCapN and Syrup draft revisions; see [baseline](#protocol-specification--versioning) |
 | Serialization | Syrup with canonical framing and strict test vectors |
 | Transports | TCP testing-only, Tor Onion testing-only, project-specific mutual TLS |
 | Runtime dependencies | None for the core library |
-| Development status | Scoped stable protocol-library release |
+| Development status | Scoped `v1.1.0-rc.1` protocol-library release candidate |
 | Independent interoperability | Glowcap two-way bootstrap/invocation; selected Nim→Goblins scenarios |
 
 > [!WARNING]
-> Raw TCP and Tor Onion are unverified/testing profiles. The mutual-TLS path
-> is a project-specific authenticated profile, not an official standardized
-> OCapN Netlayer. Do not infer production security from a successful test call.
+> Raw TCP and default/inbound Onion remain testing-only. The authenticated
+> Onion client profile and mutual TLS are project-specific profiles, not
+> official standardized OCapN Netlayers. Do not infer universal production
+> security from a successful test call.
 
 ---
 
 ## Quick start
 
-For Nimble 0.26.2, install exactly from the stable tag by cloning it first:
+For Nimble 0.26.2, install this candidate from the tag by cloning it first:
 
 ```sh
-git clone --branch v1.0.0 https://github.com/Hammer2900/nim-ocapn.git
+git clone --branch v1.1.0-rc.1 https://github.com/Hammer2900/nim-ocapn.git
 nimble install file:///absolute/path/to/nim-ocapn
 ```
 
@@ -170,7 +171,7 @@ pins the exact upstream revisions used for its compatibility profile:
 | [OCapN](https://github.com/ocapn/ocapn) | `ebf68742a40a89fff4730886a8788c5fe1bc9b96` | CapTP, Locators, Netlayers, Model, and Notation drafts |
 | [Syrup](https://github.com/ocapn/syrup) | `931fa528b8ddda976febba577fb09ee0726845d4` | Canonical data encoding and framing dependency |
 
-`1.0.0` is the version of this Nim library. It is not an OCapN
+`1.1.0rc1` is the version of this Nim library. It is not an OCapN
 specification version, and this project does not claim an official stable
 “OCapN v1.0” protocol release. A newer upstream commit is not adopted
 automatically: changing the baseline requires review, updated vectors,
@@ -204,7 +205,7 @@ Nim↔Goblins support for every operation. See
 | Transport | Authentication | Intended use | Limitations |
 | --- | --- | --- | --- |
 | Raw TCP (`nlkTcpTestingOnly`) | Unverified | Local tests and development | Unencrypted; no production channel security |
-| Tor Onion (`nlkOnionTestingOnly`) | Routing only; unverified CapTP identity binding | Explicit Tor integration tests | Requires an external Tor daemon and Onion Services; no direct-TCP fallback |
+| Tor Onion (`nlkOnionTestingOnly`) | Default routing/testing-only; explicit outbound server and application client profiles are project-specific | Real isolated Tor E2E | Requires an external Tor daemon and Onion Services; no universal netlayer or durable server identity claim |
 | Mutual TLS (`nlkMutualTls`) | Project-specific certificate and CapTP-key binding | Authenticated Nim↔Nim profile | Not an official OCapN Netlayer; inbound unified TLS listener is not exposed by `Node` |
 
 Transport selection is explicit. An authenticated path does not silently fall
@@ -282,7 +283,7 @@ needed for their optional tests or transport profiles.
 
 ## Project status & known limitations
 
-`nim-ocapn` is a scoped stable protocol-library release, not a declaration of
+`nim-ocapn` is a scoped release candidate, not a declaration of
 complete OCapN compliance. The local release gate passes. Basic Glowcap interoperability is
 verified, but the separate 24/24 × 3 conformance runner is unavailable in
 this checkout and remains UNVERIFIED, while
@@ -292,7 +293,9 @@ dependent:
 - the pinned OCapN and Syrup documents are drafts;
 - external `op:listen` mode interoperability is not fully demonstrated;
 - Goblins reconnect/cleanup coverage is incomplete;
-- Tor Onion requires externally managed services and remains unverified;
+- Tor Onion requires externally managed services; default/inbound Onion remains
+  testing-only, while the explicit client-authenticated profile is
+  project-specific;
 - raw TCP and Onion are not production-secure transports;
 - the mutual-TLS profile is project-specific and has limited independent-peer
   interoperability.

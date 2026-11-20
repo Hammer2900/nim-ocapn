@@ -1,8 +1,8 @@
-# Scoped v1.0 Release Checklist
+# Scoped v1.1.0-rc.1 Release Checklist
 
-Release: `v1.0.0` (Nimble metadata: `1.0.0`).
+Release: `v1.1.0-rc.1` (Nimble metadata: `1.1.0rc1`).
 
-Status: **READY for a scoped stable release**; not a claim of universal
+Status: **CONDITIONAL for a scoped release candidate**; not a claim of universal
 OCapN v1.0 transport security.
 
 ## Verified features
@@ -18,6 +18,8 @@ OCapN v1.0 transport security.
 - Public `import nimocapn` consumer build, examples, bootstrap, invocation,
   reconnect, and cleanup.
 - Bounded resource, robustness, GC, handoff-failure, and concurrency suites.
+- Real isolated Tor v3 E2E with client authorization, durable client proof,
+  challenge expiry, replay rejection and protected-capability gating.
 - Explicit P13 inbound mutual-TLS E2E: two independent clients, bootstrap,
   invocation, reconnect, and cleanup.
 
@@ -38,14 +40,17 @@ key unless the application supplies the project-specific out-of-band mapping.
 ## Unsupported or limited profiles
 
 - Raw TCP is testing-only and provides no channel confidentiality.
-- Tor Onion routing is testing-only/unverified; Onion Service ID ownership of a
-  CapTP key is not cryptographically proven by the pinned specification.
+- Default/inbound Tor Onion remains testing-only; the explicit outbound and
+  durable-client application profiles are project-specific. Onion Service ID
+  ownership of a durable server CapTP key is not cryptographically proven.
 - The mutual TLS profile is project-specific, not an official OCapN netlayer.
 - The public TLS listener is available under `-d:ssl`; Onion inbound serving
   remains outside the public facade.
 - Complete cross-peer advanced `op:listen`, handoff, pipelining, and
   distributed-GC interoperability is not established with all independent
   peers.
+- Protected handoff through an auxiliary Session requires independent
+  authentication; no implicit durable-client authentication is inferred.
 
 ## Release blockers
 
@@ -104,6 +109,6 @@ scenario. SKIP, UNSUPPORTED, and UNVERIFIED are not PASS.
 
 ## Versioning recommendation
 
-The proposed stable tag is `v1.0.0`. Create neither tag nor release
+The proposed candidate tag is `v1.1.0-rc.1`. Create neither tag nor release
 automatically from this preparation step. The scoped release does not claim
 the unsupported official netlayer or Onion binding.

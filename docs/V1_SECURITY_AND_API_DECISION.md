@@ -75,7 +75,7 @@ therefore be an invented authentication scheme and is intentionally not done.
 | Profile | Authentication | Confidentiality/integrity | Locator binding | Interoperability | Decision |
 |---|---|---|---|---|---|
 | Raw TCP | None by default; optional exact CapTP key policy | No channel confidentiality; CapTP framing/signatures alone are not a secure channel | Expected locator and expected CapTP key can be checked independently | Broad testing interoperability | Testing-only |
-| Tor Onion | Tor routes to the requested Service ID; no CapTP identity ownership proof | Tor supplies routing encryption, but the library has no authenticated binding evidence | Service ID is checked as a locator designator, not as a CapTP key | Real Nim↔Nim Onion tests; external authenticated interop unavailable | Testing/interop-only |
+| Tor Onion | Default routing is unauthenticated; explicit outbound profile authenticates the expected endpoint through a trusted Tor daemon | Tor supplies routing encryption; no durable Onion-to-CapTP ownership proof | Explicit profile binds the fresh CapTP key to the expected stream, not to the Onion private key | Real isolated Tor v3 E2E; external authenticated interop unavailable | Testing by default; narrow project-specific endpoint-auth profile |
 | Project mutual TLS | Certificate/CA and fingerprint checks plus explicit CapTP-key mapping | TLS channel confidentiality and integrity | Trust configuration binds the TLS peer to the expected CapTP key | Verified in the project-specific Nim↔Nim profile | Narrow authenticated profile |
 | Official OCapN authenticated netlayer | Not defined by the pinned baseline as one universal profile | Netlayer-specific | Netlayer-specific | Not verified | Unavailable |
 
@@ -110,9 +110,14 @@ This proves three different facts only when stated separately:
 - the remote CapTP key is authorized only if an explicit expected-key policy
   or authenticated netlayer trust anchor says so.
 
-The pinned Netlayers document does not specify the missing third-party binding
-between the first and third facts. Status: **PARTIAL**, not production Onion
-authentication. No implementation change is justified in this batch.
+The pinned Netlayers document does not specify a netlayer-level binding between
+the first and third facts. The project now provides a separate opt-in
+application capability: after the standard Session is open, a trusted durable
+client key signs a fresh challenge bound to both session keys, the Session ID,
+the configured Onion Service ID, and explicit roles. Protected publications
+are withheld until that proof succeeds. Status: **PARTIAL**: this authenticates
+the client application key for one authenticated Onion Session, not a standard
+OCapN netlayer identity or a durable server Node identity.
 
 ## 4. Public API stability decision
 
