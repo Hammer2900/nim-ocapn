@@ -44,7 +44,7 @@ without publishing or creating a tag.
 6. Review `docs/BETA_RELEASE_CHECKLIST.md`, package exclusions, license, and
    `git status`. Ensure no identity files, certificates, logs, binaries or
    secrets are tracked.
-7. For this candidate, change Nimble metadata to `1.1.0rc1`, commit the change,
-   and create the Git tag `v1.1.0-rc.1` only in the separate release task. This
+7. For this candidate, change Nimble metadata to `1.1.0rc2`, commit the change,
+   and create the Git tag `v1.1.0-rc.2` only in the separate release task. This
    preparation task does not create or push it. The candidate is not a claim of
    universal authenticated OCapN netlayer interoperability.

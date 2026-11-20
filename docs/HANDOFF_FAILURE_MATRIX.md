@@ -48,6 +48,21 @@ without sleeps or kernel-buffer assumptions. Remote call delivery is not made
 exactly-once: only gift redemption is one-time; ordinary CapTP calls retain
 their protocol semantics.
 
+### Independent Goblins handoff boundary
+
+The pinned Goblins source contains handoff coordinators and upstream handoff
+tests, but its public Guile API does not provide the external three-process
+driver required to run Nim A → Goblins B → Nim C (or the reverse) with
+observable signed-gift and withdrawal state. Those upstream tests are therefore
+`UNSUPPORTED` as Nim↔Goblins evidence. The protected three-process results in
+this matrix are Nim-only and must not be promoted to cross-peer PASS.
+
+The real Tor protected three-node fixture remains `ENVIRONMENT FAILURE`: after
+the three Nim listeners are created, a separate bounded SOCKS5 probe retries
+each Onion Service without sending CapTP bytes, but the current run still
+ended before CapTP establishment. This does not invalidate the separate
+successful single-service Tor E2E results.
+
 Known boundary: replay tombstones live for the lifetime of the `GiftTable` and
 are cleared when its owner is closed. Durable anti-replay across process
 restarts is not implemented.
@@ -60,10 +75,11 @@ without consuming the gift. This is a project-specific mutual-TLS profile;
 the fixture does not claim a universal authenticated OCapN netlayer.
 
 The real Tor v3 runner exercises the same protected A/B/C order over three
-Onion Services. The final run reached service bootstrap in 10.8s, client
-bootstrap in 4.8s, authenticated auxiliary withdrawal, B disconnect, C
-invocation, release, and cleanup; it completed with `PASS`. Earlier apparent
-timeouts were fixture defects: the topology connected a node to its own
-listener, asynchronous accepts omitted client-auth setup, and the test closed
-the wrong session. They were corrected in the fixture; no production timeout
-was relaxed and no unbounded wait remains.
+Onion Services, but the current multi-service run is not a protocol PASS. The
+service and client daemons boot, all three local Nim listeners accept bounded
+readiness connections, and the topology is printed with the virtual port and
+local target. The separate SOCKS5 probes nevertheless return `0x04` for all
+three services; Tor logs repeated resolve/connect failures, so CapTP is never
+reached. The runner exits as `ENVIRONMENT FAILURE` with a bounded deadline
+and cleans up both Tor and Nim processes. The single-service Tor profile still
+passes independently.

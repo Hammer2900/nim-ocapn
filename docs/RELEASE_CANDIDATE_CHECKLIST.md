@@ -1,6 +1,6 @@
-# Scoped v1.1.0-rc.1 Release Checklist
+# Scoped v1.1.0-rc.2 Release Checklist
 
-Release: `v1.1.0-rc.1` (Nimble metadata: `1.1.0rc1`).
+Release: `v1.1.0-rc.2` (Nimble metadata: `1.1.0rc2`).
 
 Status: **CONDITIONAL for a scoped release candidate**; not a claim of universal
 OCapN v1.0 transport security.
@@ -18,8 +18,14 @@ OCapN v1.0 transport security.
 - Public `import nimocapn` consumer build, examples, bootstrap, invocation,
   reconnect, and cleanup.
 - Bounded resource, robustness, GC, handoff-failure, and concurrency suites.
-- Real isolated Tor v3 E2E with client authorization, durable client proof,
-  challenge expiry, replay rejection and protected-capability gating.
+- Real isolated single-service Tor v3 E2E with client authorization, durable
+  client proof, challenge expiry, replay rejection and protected-capability
+  gating.
+- Protected three-node TCP/TLS lifecycle and failure matrix pass; the
+  multi-service Tor A/B/C fixture remains `ENVIRONMENT FAILURE` when bounded
+  SOCKS5 probes return `0x04` before CapTP.
+- Bidirectional external Goblins pipeline cases pass for success, rejection,
+  repeated delivery and duplicate-settlement safety.
 - Explicit P13 inbound mutual-TLS E2E: two independent clients, bootstrap,
   invocation, reconnect, and cleanup.
 
@@ -49,6 +55,8 @@ key unless the application supplies the project-specific out-of-band mapping.
 - Complete cross-peer advanced `op:listen`, handoff, pipelining, and
   distributed-GC interoperability is not established with all independent
   peers.
+- Multi-Onion protected A/B/C is not a PASS in the current Tor environment;
+  all local listeners are ready but Tor routing fails before CapTP.
 - Protected handoff through an auxiliary Session requires independent
   authentication; no implicit durable-client authentication is inferred.
 
@@ -101,6 +109,9 @@ nimble publicApiTest
 nimble interopTest
 nimble independentInteropTest
 nimble advancedInteropTest
+nimble threeNodeHandoffTest
+nimble onionE2eTest  # record single-service PASS and multi-Onion ENVIRONMENT FAILURE separately
+python3 -m py_compile tests/*.py
 git diff --check
 ```
 
@@ -109,6 +120,6 @@ scenario. SKIP, UNSUPPORTED, and UNVERIFIED are not PASS.
 
 ## Versioning recommendation
 
-The proposed candidate tag is `v1.1.0-rc.1`. Create neither tag nor release
+The proposed candidate tag is `v1.1.0-rc.2`. Create neither tag nor release
 automatically from this preparation step. The scoped release does not claim
 the unsupported official netlayer or Onion binding.

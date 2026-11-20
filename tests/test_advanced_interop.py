@@ -93,10 +93,10 @@ def main() -> int:
                "Glowcap CLI does not expose a selectable listen-mode driver")
         report("op:listen mode 3", "UNVERIFIED",
                "Glowcap CLI does not expose a selectable listen-mode driver")
-        report("promise pipelining", "UNSUPPORTED",
-               "no independent peer command exposes a bounded pipeline fixture")
+        report("Glowcap promise pipelining", "UNSUPPORTED",
+               "Glowcap CLI exposes no bounded pipeline fixture; pinned Goblins keeps pipeline tests inside its Guile vat tests")
         report("cross-peer handoff", "UNSUPPORTED",
-               "Glowcap CLI has no handoff fixture; Goblins environment is unavailable")
+               "Glowcap CLI has no handoff fixture; pinned Goblins exposes handoff through Guile internals, not an external driver")
         report("wire-level distributed GC", "UNSUPPORTED",
                "independent peers expose no resource-observation fixture")
         return 0

@@ -4,7 +4,7 @@
 > protocol.
 
 [![Nim 2.x](https://img.shields.io/badge/Nim-2.x-FFE953?logo=nim)](https://nim-lang.org/)
-[![Version](https://img.shields.io/badge/version-1.1.0--rc.1-5B8CFF)](./nimocapn.nimble)
+[![Version](https://img.shields.io/badge/version-1.1.0--rc.2-5B8CFF)](./nimocapn.nimble)
 [![Status](https://img.shields.io/badge/status-release--candidate-orange)](./CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./nimocapn.nimble)
 
@@ -41,12 +41,12 @@ VM, persistence layer, or Goblins port.
 | Property | Current profile |
 | --- | --- |
 | Language | Nim 2.x |
-| Package version | `1.1.0rc1` (`v1.1.0-rc.1` release candidate) |
+| Package version | `1.1.0rc2` (`v1.1.0-rc.2` release candidate) |
 | Protocol baseline | Pinned OCapN and Syrup draft revisions; see [baseline](#protocol-specification--versioning) |
 | Serialization | Syrup with canonical framing and strict test vectors |
 | Transports | TCP testing-only, Tor Onion testing-only, project-specific mutual TLS |
 | Runtime dependencies | None for the core library |
-| Development status | Scoped `v1.1.0-rc.1` protocol-library release candidate |
+| Development status | Scoped `v1.1.0-rc.2` protocol-library release candidate |
 | Independent interoperability | Glowcap two-way bootstrap/invocation; selected Nim→Goblins scenarios |
 
 > [!WARNING]
@@ -62,7 +62,7 @@ VM, persistence layer, or Goblins port.
 For Nimble 0.26.2, install this candidate from the tag by cloning it first:
 
 ```sh
-git clone --branch v1.1.0-rc.1 https://github.com/Hammer2900/nim-ocapn.git
+git clone --branch v1.1.0-rc.2 https://github.com/Hammer2900/nim-ocapn.git
 nimble install file:///absolute/path/to/nim-ocapn
 ```
 
@@ -171,7 +171,7 @@ pins the exact upstream revisions used for its compatibility profile:
 | [OCapN](https://github.com/ocapn/ocapn) | `ebf68742a40a89fff4730886a8788c5fe1bc9b96` | CapTP, Locators, Netlayers, Model, and Notation drafts |
 | [Syrup](https://github.com/ocapn/syrup) | `931fa528b8ddda976febba577fb09ee0726845d4` | Canonical data encoding and framing dependency |
 
-`1.1.0rc1` is the version of this Nim library. It is not an OCapN
+`1.1.0rc2` is the version of this Nim library. It is not an OCapN
 specification version, and this project does not claim an official stable
 “OCapN v1.0” protocol release. A newer upstream commit is not adopted
 automatically: changing the baseline requires review, updated vectors,

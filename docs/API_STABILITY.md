@@ -1,7 +1,8 @@
 # API Stability and Authentication Contract
 
 `import nimocapn` is the supported application-facing entrypoint for the
-`1.0.0` scoped stable release. The facade is intentionally small and delegates protocol
+`1.0.0` scoped stable release. The RC2 additions remain additive and do not
+change the facade contract. The facade is intentionally small and delegates protocol
 state and cleanup to the existing runtime.
 
 ## Stable surface
@@ -81,6 +82,12 @@ The `seed` arguments on low-level/session connection constructors are explicit
 deterministic session-key overrides. Normal Node calls leave them empty and
 therefore use per-session random keys. Code that depended on a beta default
 durable wire key must select `simLegacyDurable` explicitly.
+
+RC2 adds optional `HandoffSessionOpener` and
+`HandoffSessionPreparer` hooks to the low-level `HandoffManager` constructor,
+plus setters for those hooks. They are experimental integration points for
+authenticated auxiliary sessions; existing constructor calls remain source
+compatible and the stable `import nimocapn` facade does not require them.
 
 This profile does not claim that raw TCP or Onion is safe for hostile Internet
 deployment, and the project-specific TLS profile is not an official OCapN

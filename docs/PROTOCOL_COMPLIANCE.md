@@ -122,3 +122,26 @@ verification and protected handoff gifts are not redeemed by unauthenticated
 Sessions. This strengthens the project-specific profile only; it does not
 change normative CapTP wire semantics or establish universal authenticated
 netlayer interoperability.
+
+### Independent Goblins advanced operations
+
+The pinned Goblins revision (`2771da67e80b5c2a9e4ed684f24f4f95428cb419`)
+contains internal CapTP tests for `op:listen`, promise pipelining, handoff,
+and distributed GC. Those tests run inside Guile vats and do not expose a
+public external driver that can connect a Nim process and select or observe
+each operation. They therefore do not upgrade the independent Nim↔Goblins
+status of these operations. The available basic bootstrap/fetch/invocation
+path is covered separately by `independentInteropTest`.
+
+The dedicated test-only Guile adapter now provides bounded success, rejection,
+and repeated-delivery cases in the Goblins→Nim direction in addition to the
+forward case. The trace shows an inbound `desc:answer` pipeline before Nim
+settles the local promise; repeated delivery completes once per request and
+rejection remains a controlled broken promise. This exposed and fixed a Nim
+answer-to-promise routing defect; it does not upgrade `op:listen`, handoff, or
+distributed GC claims.
+
+The adapter uses only public Goblins procedures (`spawn-mycapn`, registry
+registration, actor spawning, and `spawn-promise-and-resolver`) plus a
+test-only TCP netlayer shim. It does not modify the Goblins runtime or CapTP
+wire format.

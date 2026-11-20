@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.1.0-rc.2
+
+Release candidate focused on lifecycle correctness, independent promise
+pipeline coverage, and honest Tor readiness reporting.
+
+- Fixes routing when an external peer pipelines through an answer that
+  delivers an unresolved `desc:import-promise`.
+- Adds Goblins → Nim success, rejection, repeated-delivery, duplicate
+  settlement, and disconnect regression coverage.
+- Adds three-process handoff/failure lifecycle coverage and bounded resource
+  cleanup checks.
+- Adds multi-Onion topology, local-listener, SOCKS5, and Tor-log diagnostics.
+- Preserves the standard Syrup/CapTP wire format and fresh per-session keys.
+
+Known limitation: protected multi-Onion A/B/C currently remains an
+`ENVIRONMENT FAILURE` when Tor returns SOCKS5 `0x04` before CapTP. This is not
+claimed as protocol interoperability. Advanced `op:listen`, cross-peer
+handoff, and observable cross-peer distributed GC remain unverified or
+unsupported.
+
 ## 1.1.0-rc.1
 
 Scoped release candidate for the project-specific authenticated Onion

@@ -495,6 +495,17 @@ proc runProtectedChain(services: seq[string]) =
   defer:
     for node in nodes: node.closeNode()
 
+  let readinessFile = getEnv("NIM_OCAPN_ONION_READINESS_FILE")
+  let readinessDone = getEnv("NIM_OCAPN_ONION_READINESS_DONE")
+  if readinessFile.len > 0:
+    writeFile(readinessFile, "listeners-ready\n")
+    let deadline = getMonoTime() + initDuration(seconds = 60)
+    while readinessDone.len > 0 and not fileExists(readinessDone) and
+        getMonoTime() < deadline:
+      sleep(50)
+    if readinessDone.len > 0 and not fileExists(readinessDone):
+      raise newException(SessionError, "Onion readiness probe deadline exceeded")
+
   let first = connectNodes(nodes[1], nodes[0], 'b', false, true)
   var sessions = @[first.client, first.server]
   if not pumpAll(nodes, sessions, @[], 30_000,

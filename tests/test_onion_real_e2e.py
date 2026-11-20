@@ -125,6 +125,88 @@ def start_socks_tor(tor: str, root: Path):
     return process, output, socks_port
 
 
+def _recv_exact(sock: socket.socket, size: int) -> bytes:
+    data = b""
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise RuntimeError("SOCKS5 peer closed during readiness probe")
+        data += chunk
+    return data
+
+
+def socks5_probe(host: str, socks_port: int, onion: str, target_port: int,
+                 timeout: float = 5.0) -> tuple[bool, str]:
+    """Check Onion reachability only; never sends a CapTP byte."""
+    started = time.monotonic()
+    try:
+        with socket.create_connection((host, socks_port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(b"\x05\x01\x00")
+            if _recv_exact(sock, 2) != b"\x05\x00":
+                return False, "SOCKS5 method negotiation rejected"
+            name = onion.encode("ascii")
+            sock.sendall(b"\x05\x01\x00\x03" + bytes([len(name)]) + name +
+                         target_port.to_bytes(2, "big"))
+            reply = _recv_exact(sock, 4)
+            if reply[1] != 0:
+                return False, f"SOCKS5 CONNECT reply=0x{reply[1]:02x}"
+            address_len = 4 if reply[3] == 1 else 16 if reply[3] == 4 else _recv_exact(sock, 1)[0]
+            _recv_exact(sock, address_len + 2)
+        return True, f"{time.monotonic() - started:.2f}s"
+    except (OSError, RuntimeError) as error:
+        return False, f"{type(error).__name__}: {error}"
+
+
+def wait_for_onion_readiness(hostnames: list[str], socks_port: int,
+                             target_port: int, timeout: float = 60.0) -> None:
+    """Wait for descriptors/routes, with a separate short-lived SOCKS probe."""
+    deadline = time.monotonic() + timeout
+    pending = set(range(len(hostnames)))
+    last_error = "not attempted"
+    while pending and time.monotonic() < deadline:
+        for index in list(pending):
+            ok, detail = socks5_probe("127.0.0.1", socks_port, hostnames[index], target_port)
+            if ok:
+                pending.remove(index)
+                print(f"[TOR] protected-readiness service={index} PASS ({detail})", flush=True)
+            else:
+                last_error = f"service={index} {detail}"
+        if pending:
+            time.sleep(0.25)
+    if pending:
+        raise RuntimeError(
+            "protected three-node ENVIRONMENT TIMEOUT: SOCKS5 readiness "
+            f"pending={sorted(pending)} last={last_error}")
+
+
+def wait_for_local_listeners(local_ports: list[int], timeout: float = 10.0) -> None:
+    """Confirm each Nim listener is reachable before probing Tor routing."""
+    deadline = time.monotonic() + timeout
+    pending = set(local_ports)
+    last_error = "not attempted"
+    while pending and time.monotonic() < deadline:
+        for port in list(pending):
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    pending.remove(port)
+                    print(f"[TOR] local listener port={port} PASS", flush=True)
+            except OSError as error:
+                last_error = f"port={port} {type(error).__name__}: {error}"
+        if pending:
+            time.sleep(0.1)
+    if pending:
+        raise RuntimeError(
+            "protected three-node ENVIRONMENT TIMEOUT: local listeners "
+            f"pending={sorted(pending)} last={last_error}")
+
+
+def tail_log(path: Path, lines: int = 20) -> str:
+    if not path.is_file():
+        return "<log unavailable>"
+    return "\n".join(path.read_text(errors="replace").splitlines()[-lines:])
+
+
 def run_nim(binary: Path, service: str, socks_port: int, local_port: int,
             expect_failure = False, expect_auth_failure = False,
             client_seed = "", trusted_keys = "") -> None:
@@ -165,6 +247,7 @@ def run_protected_multi_onion(tor: str, root: Path) -> None:
              "ClientOnly 0\nRunAsDaemon 0\nLog notice stdout\n"]
     for directory, local_port in zip(hidden_dirs, local_ports):
         lines += [f"HiddenServiceDir {directory}\n",
+                  "HiddenServiceVersion 3\n",
                   f"HiddenServicePort 9045 127.0.0.1:{local_port}\n"]
     service_torrc.write_text("".join(lines))
     service_process, service_output = start_tor(
@@ -185,12 +268,23 @@ def run_protected_multi_onion(tor: str, root: Path) -> None:
         if len(hostnames) != 3:
             raise RuntimeError(
                 "protected three-node ENVIRONMENT TIMEOUT: hostname publication")
+        print(f"[TOR] topology service-pid={service_process.pid} "
+              f"data={service_data} socks=service-internal/disabled", flush=True)
+        for index, (hostname, local_port, directory) in enumerate(
+                zip(hostnames, local_ports, hidden_dirs)):
+            print(f"[TOR] topology node={chr(ord('A') + index)} "
+                  f"onion={hostname}.onion virtual=9045 "
+                  f"target=127.0.0.1:{local_port} data={directory}", flush=True)
         client_process, client_output, socks_port = start_socks_tor(
             tor, root / "multi-client")
         if not wait_for_bootstrap(client_process, root / "multi-client/tor.log",
                                   "protected-client"):
             raise RuntimeError("protected three-node ENVIRONMENT TIMEOUT: client bootstrap")
+        print(f"[TOR] topology client-pid={client_process.pid} "
+              f"socks=127.0.0.1:{socks_port}", flush=True)
         environment = os.environ.copy()
+        readiness_file = root / "protected-listeners.ready"
+        readiness_done = root / "protected-listeners.probed"
         environment.update({
             "NIM_OCAPN_TOR_SOCKS": "127.0.0.1",
             "NIM_OCAPN_TOR_SOCKS_PORT": str(socks_port),
@@ -203,10 +297,56 @@ def run_protected_multi_onion(tor: str, root: Path) -> None:
             "NIM_OCAPN_ONION_SERVICE_PORT": "9045",
             "NIM_OCAPN_ONION_TRACE": "1",
             "NIM_OCAPN_ONION_PROTECTED_ONLY": "1",
+            "NIM_OCAPN_ONION_READINESS_FILE": str(readiness_file),
+            "NIM_OCAPN_ONION_READINESS_DONE": str(readiness_done),
         })
         print("[TOR] protected three-node: run Nim A/B/C", flush=True)
-        subprocess.run([str(binary)], cwd=ROOT, env=environment,
-                       check=True, timeout=180)
+        nim_process = subprocess.Popen([str(binary)], cwd=ROOT, env=environment,
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       text=True)
+        try:
+            deadline = time.monotonic() + 30
+            while not readiness_file.is_file() and time.monotonic() < deadline:
+                if nim_process.poll() is not None:
+                    break
+                time.sleep(0.05)
+            if not readiness_file.is_file():
+                if nim_process.poll() is None:
+                    nim_process.terminate()
+                    try:
+                        nim_process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        nim_process.kill()
+                        nim_process.wait()
+                output, _ = nim_process.communicate(timeout=1)
+                raise RuntimeError("protected three-node ENVIRONMENT TIMEOUT: "
+                                   "Nim listeners did not become ready\n" + output)
+            wait_for_local_listeners(local_ports)
+            try:
+                wait_for_onion_readiness(hostnames, socks_port, 9045)
+            except RuntimeError as error:
+                print("[TOR] protected three-node service log tail:", flush=True)
+                print(tail_log(root / "multi-service.log"), flush=True)
+                print("[TOR] protected three-node client log tail:", flush=True)
+                print(tail_log(root / "multi-client/tor.log"), flush=True)
+                raise
+            readiness_done.write_text("probed\n")
+            try:
+                output, _ = nim_process.communicate(timeout=180)
+            except subprocess.TimeoutExpired as error:
+                nim_process.kill()
+                nim_process.wait()
+                raise RuntimeError("protected three-node Nim runner timeout") from error
+            if nim_process.returncode:
+                raise RuntimeError("protected three-node Nim runner failed:\n" + output)
+        finally:
+            if nim_process.poll() is None:
+                nim_process.terminate()
+                try:
+                    nim_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    nim_process.kill()
+                    nim_process.wait()
         print("[TOR] protected three-node: PASS", flush=True)
     except subprocess.TimeoutExpired as error:
         raise RuntimeError("protected three-node Nim runner timeout") from error

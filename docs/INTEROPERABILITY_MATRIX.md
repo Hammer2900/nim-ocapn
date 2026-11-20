@@ -127,9 +127,60 @@ project-specific mutual-TLS profile: A owns the protected export, B and C are
 independent processes, and C authenticates its own auxiliary Session before
 withdrawal. It is not cross-peer interoperability evidence.
 
-The isolated real Tor v3 run is `PASS` for Nim A/B/C protected handoff:
-service and client Tor bootstrap completed, B authenticated to A, C opened a
-separate authenticated auxiliary Session, withdrew the gift, continued the
-invocation after B disconnected, and released the capability. This remains
-Nim-only evidence for the project-specific Onion/TLS profile, not independent
+The isolated real Tor v3 single-service run is `PASS` for its authenticated
+Nim↔Nim lifecycle. The separate multi-service A/B/C protected handoff remains
+`ENVIRONMENT FAILURE`: local listeners are ready, but Tor returns SOCKS5
+`0x04` before CapTP for all three published services. This remains Nim-only
+evidence for the project-specific Onion/TLS profile, not independent
 Glowcap/Goblins interoperability.
+
+### Advanced Goblins driver boundary
+
+The pinned Goblins checkout is a Guile/Scheme implementation, not a Racket
+implementation. Its public OCapN entry points are `spawn-mycapn` and
+`captp-env`; the checkout contains no Racket adapter or built-in external
+driver for selecting an `op:listen` mode, constructing a cross-process handoff,
+or observing reference-table GC. The source and upstream tests do contain
+internal coverage for `op:listen`, promise pipelining, handoff, and GC, but
+those in-process/vat tests are not Nim↔Goblins evidence. The project now has a
+small test-only Guile adapter built from public Goblins procedures for the
+bounded pipeline cases documented below.
+
+| Scenario | Nim ↔ Goblins status | Evidence / limitation |
+|---|---|---|
+| Bootstrap, sturdyref fetch, invocation | PASS | Existing Guile fixture and independent process runner |
+| Repeated/restarted basic session | PASS | Existing fixture runner; durable identity remains UNVERIFIED |
+| `op:listen` modes 1/2/3 | UNVERIFIED | No external Goblins mode-selection API; Glowcap CLI has no equivalent driver |
+| Promise pipelining | PASS (both directions, success/rejection/repeated delivery) | Forward driver plus reverse Guile modes; reverse trace records inbound `desc:answer` before Nim `promise:settle`, including a rejected promise and two queued calls |
+| Cross-peer handoff | UNSUPPORTED | No public Goblins external handoff fixture/API for a mixed three-process run |
+| Wire-observable distributed GC | UNSUPPORTED | No independent peer resource-observation driver |
+
+No external specification mismatch was established. The reverse case did
+identify a local Nim routing defect, fixed in `src/session.nim`; the pinned
+Goblins runtime was not changed. A direct standalone `test-captp.scm` probe
+also passes with the complete local Guile/pre-inst-env environment, but that
+is upstream-suite evidence rather than Nim↔Goblins evidence.
+
+The minimal external Guile adapter is reproducible with
+`python3 tests/test_goblins_advanced.py`: it runs bounded success, rejection,
+and repeated-delivery reverse cases in addition to the forward case. In
+Goblins→Nim, the trace shows an inbound `desc:answer` pipeline while the
+promise is unresolved, followed by Nim settlement; the rejection and repeated
+cases also complete without duplicate delivery. This exposed and fixed a Nim
+answer-to-promise routing defect.
+
+The standalone Goblins test probe is `PASS` with the complete local
+environment (`guile 3.0.9`, pinned `pre-inst-env`, compiled/dependency load
+paths, and `GUILE_AUTO_COMPILE=0`); it reports the expected 20 test passes and
+exit code 0. The earlier exit-134 result was an environment/setup failure and
+was not used as protocol evidence.
+
+The protected three-node Tor fixture now has an explicit v3 configuration,
+local-listener checks, a bounded separate SOCKS5 readiness probe, topology
+diagnostics, and Tor-log tails after the three Nim listeners are created and
+before CapTP dialing. It never sends CapTP bytes. In the current run all three
+local listeners were reachable, but all three Onion probes still returned
+SOCKS5 `0x04` and Tor logged repeated inability to resolve/connect to the
+scrubbed service targets. The failure remains before CapTP and is classified
+as `ENVIRONMENT FAILURE`; single-service Tor E2E remains independently
+passing.

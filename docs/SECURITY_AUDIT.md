@@ -132,9 +132,11 @@ attempts fail closed and do not redeem the protected gift. After withdrawal,
 the protected behavior is transferred into the auxiliary Session so C can
 continue after B closes. This is the tested project-specific profile; it does
 not authenticate arbitrary Onion clients or establish durable server identity.
-The real Tor v3 protected three-node run completed with `PASS`. C performed
-its own durable Ed25519 proof on a fresh A-session before withdrawal; B's
-authentication was not inherited. Unknown/unauthenticated paths remain
-fail-closed, and the post-withdrawal proxy is owned by the auxiliary Session,
-so B disconnect does not invalidate C's capability. The evidence is limited
-to separate Nim processes and the configured project-specific profile.
+The Nim-only protected three-node lifecycle passes under the local TCP/TLS
+fixture: C performs its own durable Ed25519 proof on a fresh A-session before
+withdrawal; B's authentication is not inherited. Unknown/unauthenticated
+paths remain fail-closed, and the post-withdrawal proxy is owned by the
+auxiliary Session, so B disconnect does not invalidate C's capability. The
+real multi-service Tor runner is currently `ENVIRONMENT FAILURE`: local
+listeners are ready, but SOCKS5 returns `0x04` before CapTP for all three
+Onion targets. This does not upgrade the Tor result to a security PASS.

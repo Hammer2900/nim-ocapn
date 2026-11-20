@@ -1,6 +1,6 @@
 # Nimble 0.26 splits cached package paths at the last hyphen; keep the
 # prerelease marker attached to the numeric version so clean installs work.
-version       = "1.1.0rc1"
+version       = "1.1.0rc2"
 author        = "NimOCPN contributors"
 description   = "Minimal independent OCapN/CapTP implementation in Nim"
 license       = "Apache-2.0"
@@ -49,7 +49,7 @@ task independentInteropTest, "Run the upstream OCapN suite against unmodified Go
   exec "python3 tests/test_goblins_interop.py"
 
 task advancedInteropTest, "Run bounded advanced scenarios against independent peers":
-  exec "python3 tests/test_advanced_interop.py"
+  exec "python3 tests/test_goblins_advanced.py && python3 tests/test_advanced_interop.py"
 
 task threeNodeHandoffTest, "Run three-process handoff, failure, GC and reconnect tests":
   exec "python3 tests/test_three_node_handoff.py"

@@ -1591,6 +1591,14 @@ proc executePipelineRequest(session: Session; capability: SyrupValue;
                            session.brokenAnswers[request.answerPosition] = reason
                            session.flushPipelines(request.answerPosition)
                          return
+  if resolvedTarget.kind == rkImportPromise and
+      session.promiseSlots.hasKey(resolvedTarget.position):
+    ## An external peer may pipeline through the answer that delivered a
+    ## promise.  Re-home that queued request onto the promise slot instead of
+    ## treating the promise export as an ordinary actor.
+    session.queuePipelineRequest(resolvedTarget.position, request)
+    session.flushPipelines(resolvedTarget.position)
+    return
   let behavior = session.references.exportBehavior(resolvedTarget.position)
 
   if behavior.isNil:

@@ -36,3 +36,18 @@ The real Tor protected handoff also observed the expected sequence of
 `op:gc-exports` and `op:gc-answers` after withdrawal, B disconnect, C
 invocation, and release. This is wire/lifecycle evidence for the three-process
 fixture; it does not claim durable GC across process restarts.
+
+### Independent Goblins status
+
+Goblins revision `2771da67e80b5c2a9e4ed684f24f4f95428cb419` implements
+`op:gc-exports` and `op:gc-answers` internally and has upstream tests for
+their lifecycle. The pinned Guile checkout does not expose a bounded external
+driver or observable reference counters for a Nim↔Goblins run. Cross-peer
+wire-level GC is therefore `UNSUPPORTED`/`UNVERIFIED`, not PASS. Nim-only
+three-process evidence and the existing basic Nim↔Goblins fixture remain
+separate claims.
+
+The external Goblins reverse-pipeline result is separate from GC: it proves
+`desc:answer` queueing and later promise settlement for success, rejection,
+and repeated delivery, but provides no observable Goblins reference counters
+or `op:gc-*` evidence.

@@ -814,6 +814,85 @@ suite "in-memory Nim CapTP prototype":
     check pipelinedResult.state == psFulfilled
     check pipelinedResult.value.data == "remote promise pipeline"
 
+  test "external answer promise pipeline propagates rejection and cleans up":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let pending = server.newPromisePair()
+    let factory = server.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      server.promisePayloadDescriptor(pending.vow))
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let answer = client.call(factory, "make", [])
+    discard server.pump()
+    discard client.pump()
+    check answer.state == psFulfilled
+    let pipelined = client.deliverCall(answer.value.descriptor(), [symbol("value")])
+    discard server.pump()
+    check pipelined.state == psPending
+    server.breakPromise(pending.vow, "external promise rejected")
+    discard server.pump()
+    discard client.pump()
+    check pipelined.state == psBroken
+    check pipelined.reason == "external promise rejected"
+    server.close("external promise rejection cleanup")
+    client.close("external promise rejection cleanup")
+    check server.stats().promiseSlotCount == 0
+
+  test "external answer promise pipeline handles concurrent delivery once":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let remote = server.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      text("concurrent pipeline"))
+    let pending = server.newPromisePair()
+    let factory = server.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      server.promisePayloadDescriptor(pending.vow))
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let answer = client.call(factory, "make", [])
+    discard server.pump()
+    discard client.pump()
+    let first = client.deliverCall(answer.value.descriptor(), [symbol("value")])
+    let second = client.deliverCall(answer.value.descriptor(), [symbol("value")])
+    discard server.pump()
+    check first.state == psPending
+    check second.state == psPending
+    server.settlePromise(pending.vow, remote.payloadDescriptor())
+    server.settlePromise(pending.vow, remote.payloadDescriptor())
+    discard server.pump()
+    discard client.pump()
+    check first.state == psFulfilled
+    check second.state == psFulfilled
+    check first.value.data == "concurrent pipeline"
+    check second.value.data == "concurrent pipeline"
+    check server.stats().pendingPromises == 0
+    server.close("external promise duplicate settlement")
+    client.close("external promise duplicate settlement")
+    check server.stats().promiseSlotCount == 0
+
+  test "external answer promise pipeline disconnect cleans pending delivery":
+    let pair = inMemoryPair()
+    let server = newSession(pair.remote)
+    let pending = server.newPromisePair()
+    let factory = server.exportObject(proc(args: seq[SyrupValue]): SyrupValue =
+      server.promisePayloadDescriptor(pending.vow))
+    let client = newSession(pair.local)
+    discard server.pump()
+    discard client.pump()
+    let answer = client.call(factory, "make", [])
+    discard server.pump()
+    discard client.pump()
+    let pipelined = client.deliverCall(answer.value.descriptor(), [symbol("value")])
+    discard server.pump()
+    check pipelined.state == psPending
+    server.close("external promise disconnect")
+    discard client.pump()
+    check client.state == ssClosed
+    check client.stats().pendingPromises == 0
+    check server.stats().promiseSlotCount == 0
+    client.close("external promise disconnect cleanup")
+
   test "forwarded capability proxy retires after wire GC":
     let pair = inMemoryPair()
     let source = newSession(pair.remote)
